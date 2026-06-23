@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://visionnavi.local/contracts/canonical_command.schema.json",
+  "title": "CanonicalCommand",
+  "type": "object",
+  "required": [
+    "input_mode",
+    "raw_text",
+    "normalized_text",
+    "task_domain",
+    "intent",
+    "risk_level",
+    "requires_confirmation"
+  ],
+  "properties": {
+    "input_mode": {
+      "type": "string",
+      "enum": ["voice", "text"]
+    },
+    "raw_text": {
+      "type": "string",
+      "minLength": 1
+    },
+    "normalized_text": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_domain": {
+      "type": "string",
+      "enum": ["web", "desktop", "hybrid"]
+    },
+    "intent": {
+      "type": "string",
+      "minLength": 1
+    },
+    "risk_level": {
+      "type": "string",
+      "enum": ["low", "medium", "high"]
+    },
+    "requires_confirmation": {
+      "type": "boolean"
+    },
+    "target_app": {
+      "type": ["string", "null"]
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}
