@@ -25,6 +25,16 @@ def test_extract_notepad_text_from_english_prompt() -> None:
     assert result == "my presentation notes for today"
 
 
+def test_extract_notepad_text_from_exact_then_save_prompt() -> None:
+    executor = DesktopExecutor()
+
+    result = executor._extract_notepad_text(
+        "Open Notepad and type exactly VisionNavi external desktop verification, then save the file."
+    )
+
+    assert result == "VisionNavi external desktop verification"
+
+
 def test_execute_notepad_flow_prefers_uia_automation(monkeypatch) -> None:
     executor = DesktopExecutor()
     command = _build_notepad_command()

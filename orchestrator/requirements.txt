@@ -6,3 +6,5 @@ httpx>=0.27,<1.0
 pywinauto>=0.6.8,<1.0
 pywin32>=306
 pytest>=8.2,<9.0
+browser-use[core]>=0.13,<0.14
+faster-whisper>=1.1,<2.0

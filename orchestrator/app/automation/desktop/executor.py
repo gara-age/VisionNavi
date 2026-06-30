@@ -480,6 +480,8 @@ class DesktopExecutor:
 
     def _extract_notepad_text(self, raw_text: str) -> str:
         patterns = [
+            r'open notepad and type exactly "(.+?)"(?:,?\s*then save(?: the file)?)?[.!]?$',
+            r"open notepad and type exactly (.+?)(?:,?\s*then save(?: the file)?)?[.!]?$",
             r"open notepad and type (.+)",
             r"open notepad and write (.+)",
             r"open notepad then type (.+)",

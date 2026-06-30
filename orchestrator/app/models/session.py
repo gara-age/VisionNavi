@@ -10,6 +10,7 @@ class SessionEvent(BaseModel):
     type: str
     phase: str
     detail: str
+    payload: dict[str, Any] | None = None
 
 
 class SessionSnapshot(BaseModel):
@@ -19,6 +20,7 @@ class SessionSnapshot(BaseModel):
     command: CanonicalCommand
     steps: list[dict[str, str]] = Field(default_factory=list)
     result: dict[str, Any] | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
     events: list[SessionEvent] = Field(default_factory=list)
 
 

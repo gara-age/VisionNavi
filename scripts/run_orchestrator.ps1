@@ -5,4 +5,8 @@ if (-not (Test-Path .\.venv\Scripts\python.exe)) {
   exit 1
 }
 
-.\.venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload --app-dir orchestrator
+$env:DEFAULT_BROWSER_EXECUTION_BACKEND = "external_browser_agent"
+$env:DEFAULT_DESKTOP_EXECUTION_BACKEND = "external_desktop_agent"
+$env:EXTERNAL_AGENT_FALLBACK_TO_INTERNAL = "true"
+
+.\.venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8010 --reload --app-dir orchestrator

@@ -10,7 +10,12 @@ class SessionStore:
     def __init__(self) -> None:
         self._sessions: dict[str, SessionSnapshot] = {}
 
-    def create(self, command: CanonicalCommand, steps: list[dict[str, str]]) -> SessionSnapshot:
+    def create(
+        self,
+        command: CanonicalCommand,
+        steps: list[dict[str, str]],
+        metadata: dict[str, Any] | None = None,
+    ) -> SessionSnapshot:
         session_id = str(uuid4())
         snapshot = SessionSnapshot(
             session_id=session_id,
@@ -18,6 +23,7 @@ class SessionStore:
             current_phase="queued",
             command=command,
             steps=steps,
+            metadata=metadata or {},
         )
         self._sessions[session_id] = snapshot
         self.append_event(
@@ -55,16 +61,28 @@ class SessionStore:
         snapshot.status = "canceled"
         snapshot.current_phase = "canceled"
 
+    def merge_metadata(self, session_id: str, metadata: dict[str, Any]) -> None:
+        snapshot = self._sessions[session_id]
+        snapshot.metadata.update(metadata)
+
     def is_canceled(self, session_id: str) -> bool:
         return self._sessions[session_id].status == "canceled"
 
-    def append_event(self, session_id: str, event_type: str, phase: str, detail: str) -> SessionEvent:
+    def append_event(
+        self,
+        session_id: str,
+        event_type: str,
+        phase: str,
+        detail: str,
+        payload: dict[str, Any] | None = None,
+    ) -> SessionEvent:
         snapshot = self._sessions[session_id]
         event = SessionEvent(
             sequence=len(snapshot.events) + 1,
             type=event_type,
             phase=phase,
             detail=detail,
+            payload=payload,
         )
         snapshot.events.append(event)
         return event

@@ -16,3 +16,11 @@ build/
 .vscode/
 Thumbs.db
 Desktop.ini
+node_modules/
+logs/
+runtime/chrome_debug_profile/
+runtime/*.log
+runtime/*dump*.json
+runtime/naver_*.json
+orchestrator/visionnavi_orchestrator.egg-info/
+runtime/external_agents/ui_tars_bridge/node_modules/

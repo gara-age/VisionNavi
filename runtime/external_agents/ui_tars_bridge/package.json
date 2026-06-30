@@ -1,0 +1,19 @@
+{
+  "name": "ui_tars_bridge",
+  "version": "1.0.0",
+  "description": "",
+  "main": "run_ui_tars.js",
+  "scripts": {
+    "bridge": "node run_ui_tars.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@ui-tars/operator-nut-js": "^1.2.3",
+    "@ui-tars/sdk": "^1.2.3",
+    "uuid": "^14.0.1"
+  }
+}
