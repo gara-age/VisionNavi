@@ -8,9 +8,9 @@ import '../models/session_models.dart';
 class OrchestratorClient {
   OrchestratorClient({
     String host = '127.0.0.1',
-    int port = 8000,
-  }) : _httpBaseUri = Uri.parse('http://$host:$port'),
-       _wsBaseUri = Uri.parse('ws://$host:$port');
+    int port = 8010,
+  })  : _httpBaseUri = Uri.parse('http://$host:$port'),
+        _wsBaseUri = Uri.parse('ws://$host:$port');
 
   final Uri _httpBaseUri;
   final Uri _wsBaseUri;
@@ -28,7 +28,8 @@ class OrchestratorClient {
     return '$fallbackMessage: ${response.statusCode}';
   }
 
-  Future<CanonicalCommand> canonicalizeCommand(String text, {String inputMode = 'text'}) async {
+  Future<CanonicalCommand> canonicalizeCommand(String text,
+      {String inputMode = 'text'}) async {
     final response = await http.post(
       _httpBaseUri.resolve('/pipeline/canonicalize'),
       headers: {'Content-Type': 'application/json'},
@@ -39,13 +40,16 @@ class OrchestratorClient {
     );
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw HttpException(_errorMessage('Failed to canonicalize command', response));
+      throw HttpException(
+          _errorMessage('Failed to canonicalize command', response));
     }
 
-    return CanonicalCommand.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    return CanonicalCommand.fromJson(
+        jsonDecode(response.body) as Map<String, dynamic>);
   }
 
-  Future<RunCommandResponse> runCommand(String text, {String inputMode = 'text'}) async {
+  Future<RunCommandResponse> runCommand(String text,
+      {String inputMode = 'text'}) async {
     final response = await http.post(
       _httpBaseUri.resolve('/pipeline/run'),
       headers: {'Content-Type': 'application/json'},
@@ -59,12 +63,14 @@ class OrchestratorClient {
       throw HttpException(_errorMessage('Failed to run command', response));
     }
 
-    return RunCommandResponse.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    return RunCommandResponse.fromJson(
+        jsonDecode(response.body) as Map<String, dynamic>);
   }
 
   Future<RunCommandResponse> runCanonicalCommand(
     CanonicalCommand command, {
     bool confirmed = false,
+    String? executionBackend,
   }) async {
     final response = await http.post(
       _httpBaseUri.resolve('/pipeline/run'),
@@ -72,41 +78,172 @@ class OrchestratorClient {
       body: jsonEncode({
         'canonical_command': command.toJson(),
         'confirmed': confirmed,
+        if (executionBackend != null) 'execution_backend': executionBackend,
       }),
     );
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw HttpException(_errorMessage('Failed to run canonical command', response));
+      throw HttpException(
+          _errorMessage('Failed to run canonical command', response));
     }
 
-    return RunCommandResponse.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    return RunCommandResponse.fromJson(
+        jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  Future<AudioTranscriptionResponse> transcribeAudioFile(
+    String filePath, {
+    String? languageHint,
+  }) async {
+    final response = await http.post(
+      _httpBaseUri.resolve('/pipeline/transcribe-audio'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'file_path': filePath,
+        if (languageHint != null) 'language_hint': languageHint,
+      }),
+    );
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw HttpException(_errorMessage('Failed to transcribe audio file', response));
+    }
+
+    return AudioTranscriptionResponse.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<PopupSummaryResponse> generatePopupSummary({
+    required CanonicalCommand command,
+    required Map<String, dynamic> result,
+    required String language,
+  }) async {
+    final response = await http.post(
+      _httpBaseUri.resolve('/pipeline/popup-summary'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'command': command.toJson(),
+        'result': result,
+        'language': language,
+      }),
+    );
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw HttpException(_errorMessage('Failed to generate popup summary', response));
+    }
+
+    return PopupSummaryResponse.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<SessionSnapshot> fetchSession(String sessionId) async {
+    final response =
+        await http.get(_httpBaseUri.resolve('/pipeline/sessions/$sessionId'));
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw HttpException(_errorMessage('Failed to fetch session', response));
+    }
+    return SessionSnapshot.fromJson(
+        jsonDecode(response.body) as Map<String, dynamic>);
   }
 
   Stream<SessionEvent> watchSession(String sessionId) async* {
-    final socket = await WebSocket.connect(
-      _wsBaseUri.resolve('/pipeline/sessions/$sessionId/events').toString(),
-    );
-
+    var lastSequence = 0;
     try {
-      await for (final message in socket) {
-        if (message is! String) {
+      final socketUri = _wsBaseUri.replace(
+        scheme: 'ws',
+        path: '/pipeline/sessions/$sessionId/events',
+        fragment: '',
+      );
+      final socket = await WebSocket.connect(socketUri.toString());
+
+      try {
+        await for (final message in socket) {
+          if (message is! String) {
+            continue;
+          }
+
+          final decoded = jsonDecode(message) as Map<String, dynamic>;
+          if (decoded['type'] == 'error') {
+            throw HttpException(
+                decoded['detail'] as String? ?? 'Unknown session error');
+          }
+
+          final sequence = decoded['sequence'];
+          if (sequence is int && sequence > lastSequence) {
+            lastSequence = sequence;
+          }
+          yield SessionEvent.fromJson(decoded);
+        }
+      } finally {
+        await socket.close();
+      }
+
+      final finalSnapshot = await fetchSession(sessionId);
+      for (final event in finalSnapshot.events) {
+        if (event.sequence <= lastSequence) {
           continue;
         }
-
-        final decoded = jsonDecode(message) as Map<String, dynamic>;
-        if (decoded['type'] == 'error') {
-          throw HttpException(decoded['detail'] as String? ?? 'Unknown session error');
-        }
-
-        yield SessionEvent.fromJson(decoded);
+        lastSequence = event.sequence;
+        yield SessionEvent(
+          sequence: event.sequence,
+          type: event.type,
+          phase: event.phase,
+          detail: event.detail,
+          status: finalSnapshot.status,
+          currentPhase: finalSnapshot.currentPhase,
+          payload: event.payload,
+          metadata: finalSnapshot.metadata,
+          result: finalSnapshot.result,
+        );
       }
-    } finally {
-      await socket.close();
+
+      if (finalSnapshot.status == 'completed' ||
+          finalSnapshot.status == 'failed' ||
+          finalSnapshot.status == 'canceled') {
+        return;
+      }
+    } on WebSocketException {
+      // Fall back to polling when WebSocket upgrade is not available.
+    } on SocketException {
+      // Fall back to polling when the socket connection cannot be established.
+    } on HttpException {
+      // Fall back to polling when the backend rejects the WebSocket path.
+    }
+
+    while (true) {
+      final snapshot = await fetchSession(sessionId);
+      for (final event in snapshot.events) {
+        if (event.sequence <= lastSequence) {
+          continue;
+        }
+        lastSequence = event.sequence;
+        yield SessionEvent(
+          sequence: event.sequence,
+          type: event.type,
+          phase: event.phase,
+          detail: event.detail,
+          status: snapshot.status,
+          currentPhase: snapshot.currentPhase,
+          payload: event.payload,
+          metadata: snapshot.metadata,
+          result: snapshot.result,
+        );
+      }
+
+      if (snapshot.status == 'completed' ||
+          snapshot.status == 'failed' ||
+          snapshot.status == 'canceled') {
+        return;
+      }
+
+      await Future<void>.delayed(const Duration(milliseconds: 700));
     }
   }
 
   Future<void> stopSession(String sessionId) async {
-    final response = await http.post(_httpBaseUri.resolve('/pipeline/sessions/$sessionId/stop'));
+    final response = await http
+        .post(_httpBaseUri.resolve('/pipeline/sessions/$sessionId/stop'));
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw HttpException('Failed to stop session: ${response.statusCode}');
     }

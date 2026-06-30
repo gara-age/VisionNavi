@@ -58,6 +58,8 @@ class SessionEvent {
     required this.detail,
     required this.status,
     this.currentPhase,
+    this.payload,
+    this.metadata,
     this.result,
   });
 
@@ -69,6 +71,8 @@ class SessionEvent {
       detail: json['detail'] as String,
       status: json['status'] as String? ?? 'queued',
       currentPhase: json['current_phase'] as String?,
+      payload: (json['payload'] as Map?)?.cast<String, dynamic>(),
+      metadata: (json['metadata'] as Map?)?.cast<String, dynamic>(),
       result: json['result'] as Map<String, dynamic>?,
     );
   }
@@ -79,6 +83,8 @@ class SessionEvent {
   final String detail;
   final String status;
   final String? currentPhase;
+  final Map<String, dynamic>? payload;
+  final Map<String, dynamic>? metadata;
   final Map<String, dynamic>? result;
 }
 
@@ -90,6 +96,7 @@ class SessionSnapshot {
     required this.command,
     required this.steps,
     required this.events,
+    required this.metadata,
     this.result,
   });
 
@@ -98,13 +105,15 @@ class SessionSnapshot {
       sessionId: json['session_id'] as String,
       status: json['status'] as String,
       currentPhase: json['current_phase'] as String,
-      command: CanonicalCommand.fromJson(json['command'] as Map<String, dynamic>),
+      command:
+          CanonicalCommand.fromJson(json['command'] as Map<String, dynamic>),
       steps: (json['steps'] as List<dynamic>? ?? const [])
           .map((item) => (item as Map<String, dynamic>).cast<String, String>())
           .toList(),
       events: (json['events'] as List<dynamic>? ?? const [])
           .map((item) => SessionEvent.fromJson(item as Map<String, dynamic>))
           .toList(),
+      metadata: (json['metadata'] as Map?)?.cast<String, dynamic>() ?? const {},
       result: json['result'] as Map<String, dynamic>?,
     );
   }
@@ -115,6 +124,7 @@ class SessionSnapshot {
   final CanonicalCommand command;
   final List<Map<String, String>> steps;
   final List<SessionEvent> events;
+  final Map<String, dynamic> metadata;
   final Map<String, dynamic>? result;
 }
 
@@ -128,12 +138,63 @@ class RunCommandResponse {
   factory RunCommandResponse.fromJson(Map<String, dynamic> json) {
     return RunCommandResponse(
       sessionId: json['session_id'] as String,
-      command: CanonicalCommand.fromJson(json['command'] as Map<String, dynamic>),
-      session: SessionSnapshot.fromJson(json['session'] as Map<String, dynamic>),
+      command:
+          CanonicalCommand.fromJson(json['command'] as Map<String, dynamic>),
+      session:
+          SessionSnapshot.fromJson(json['session'] as Map<String, dynamic>),
     );
   }
 
   final String sessionId;
   final CanonicalCommand command;
   final SessionSnapshot session;
+}
+
+class AudioTranscriptionResponse {
+  const AudioTranscriptionResponse({
+    required this.text,
+    required this.filePath,
+    required this.model,
+    this.detectedLanguage,
+    this.languageProbability,
+    this.durationSeconds,
+  });
+
+  factory AudioTranscriptionResponse.fromJson(Map<String, dynamic> json) {
+    return AudioTranscriptionResponse(
+      text: json['text'] as String,
+      filePath: json['file_path'] as String,
+      model: json['model'] as String,
+      detectedLanguage: json['detected_language'] as String?,
+      languageProbability: (json['language_probability'] as num?)?.toDouble(),
+      durationSeconds: (json['duration_seconds'] as num?)?.toDouble(),
+    );
+  }
+
+  final String text;
+  final String filePath;
+  final String model;
+  final String? detectedLanguage;
+  final double? languageProbability;
+  final double? durationSeconds;
+}
+
+class PopupSummaryResponse {
+  const PopupSummaryResponse({
+    required this.title,
+    required this.message,
+    this.notes = const [],
+  });
+
+  factory PopupSummaryResponse.fromJson(Map<String, dynamic> json) {
+    return PopupSummaryResponse(
+      title: json['title'] as String,
+      message: json['message'] as String,
+      notes: (json['notes'] as List<dynamic>? ?? const []).cast<String>(),
+    );
+  }
+
+  final String title;
+  final String message;
+  final List<String> notes;
 }

@@ -7,6 +7,7 @@ ThemeData buildAppTheme() {
   final base = ThemeData(
     brightness: Brightness.light,
     useMaterial3: true,
+    fontFamily: 'Pretendard',
   );
 
   final textTheme = buildTextTheme(base.textTheme).apply(
