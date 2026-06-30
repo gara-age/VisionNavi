@@ -4,6 +4,8 @@
 
 VisionNavi moves from a single planner pipeline to a stateful hybrid agent that observes the current browser or desktop UI before choosing the next action.
 
+The next architectural step is described in [continuous-llm-runtime.md](/C:/Users/USER/Documents/VisionNavi/docs/continuous-llm-runtime.md), which frames VisionNavi as a continuous LLM-guided runtime rather than a one-shot planner.
+
 ## Design Principles
 
 - `vision-first`: screen state is the primary source of truth for planning
