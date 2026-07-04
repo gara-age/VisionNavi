@@ -12,7 +12,9 @@ dependencies:
   cupertino_icons: ^1.0.8
   file_selector: ^1.0.3
   http: ^1.2.2
+  record: ^6.2.1
   speech_to_text: ^7.3.0
+  window_manager: ^0.5.1
 
 dev_dependencies:
   flutter_test:

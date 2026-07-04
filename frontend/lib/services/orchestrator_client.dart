@@ -137,6 +137,72 @@ class OrchestratorClient {
     );
   }
 
+  Future<WakeWordStatusResponse> fetchWakeWordStatus() async {
+    final response = await http.get(_httpBaseUri.resolve('/pipeline/wakeword/status'));
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw HttpException(_errorMessage('Failed to fetch wakeword status', response));
+    }
+    return WakeWordStatusResponse.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<AudioDiagnosticsResponse> fetchAudioDiagnostics() async {
+    final response = await http.get(_httpBaseUri.resolve('/pipeline/audio-diagnostics'));
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw HttpException(_errorMessage('Failed to fetch audio diagnostics', response));
+    }
+    return AudioDiagnosticsResponse.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<WakeWordStatusResponse> startWakeWord({
+    required String language,
+    String? phrase,
+    String? profileId,
+    double? threshold,
+  }) async {
+    final response = await http.post(
+      _httpBaseUri.resolve('/pipeline/wakeword/start'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'language': language,
+        if (phrase != null) 'phrase': phrase,
+        if (profileId != null) 'profile_id': profileId,
+        if (threshold != null) 'threshold': threshold,
+      }),
+    );
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw HttpException(_errorMessage('Failed to start wakeword listener', response));
+    }
+    return WakeWordStatusResponse.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<WakeWordStatusResponse> stopWakeWord() async {
+    final response = await http.post(_httpBaseUri.resolve('/pipeline/wakeword/stop'));
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw HttpException(_errorMessage('Failed to stop wakeword listener', response));
+    }
+    return WakeWordStatusResponse.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
+  Future<WakeWordStatusResponse> acknowledgeWakeWord() async {
+    final response =
+        await http.post(_httpBaseUri.resolve('/pipeline/wakeword/acknowledge'));
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw HttpException(
+          _errorMessage('Failed to acknowledge wakeword detection', response));
+    }
+    return WakeWordStatusResponse.fromJson(
+      jsonDecode(response.body) as Map<String, dynamic>,
+    );
+  }
+
   Future<SessionSnapshot> fetchSession(String sessionId) async {
     final response =
         await http.get(_httpBaseUri.resolve('/pipeline/sessions/$sessionId'));

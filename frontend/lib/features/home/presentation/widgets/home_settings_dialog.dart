@@ -20,16 +20,9 @@ class _HomeSettingsDialogState extends State<HomeSettingsDialog> {
   late HomeUserSettings _draft;
   int _selectedTab = 0;
 
-  bool get _isJapanese => _draft.preferredLanguage == '일본어';
+  bool get _isJapanese => _draft.preferredLanguage == 'ja';
 
   String _t(String ko, String ja) => _isJapanese ? ja : ko;
-
-  List<String> get _tabs => [
-        _t('기본 설정', '基本設定'),
-        _t('음성 및 입력', '音声と入力'),
-        _t('보안', 'セキュリティ'),
-        _t('화면 설정', '画面設定'),
-      ];
 
   @override
   void initState() {
@@ -50,103 +43,145 @@ class _HomeSettingsDialogState extends State<HomeSettingsDialog> {
     }
   }
 
+  void _save() {
+    Navigator.of(context).pop(_draft);
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final surfaceTheme = theme.extension<AppSurfaceTheme>()!;
 
     return Dialog(
-      insetPadding: const EdgeInsets.all(24),
+      insetPadding: const EdgeInsets.all(20),
       backgroundColor: Colors.transparent,
-      child: Center(
-        child: Container(
-          width: 820,
-          height: 640,
-          decoration: BoxDecoration(
-            color: surfaceTheme.surface,
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: surfaceTheme.border),
-            boxShadow: const [
-              BoxShadow(
-                color: Color(0x33000000),
-                blurRadius: 28,
-                offset: Offset(0, 14),
+      child: Container(
+        width: 820,
+        height: 680,
+        decoration: BoxDecoration(
+          color: surfaceTheme.surface,
+          borderRadius: BorderRadius.circular(28),
+          border: Border.all(color: surfaceTheme.border),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x1F0F172A),
+              blurRadius: 36,
+              offset: Offset(0, 20),
+            ),
+          ],
+        ),
+        child: Column(
+          children: [
+            _DialogHeader(
+              title: _t('설정', '設定'),
+              subtitle: _t(
+                '사용 방법, 말하기, 안전, 화면 보기를 생활형 환경에 맞게 조정합니다.',
+                '使い方、話しかけ、安心、画面表示を生活スタイルに合わせて調整します。',
               ),
-            ],
-          ),
-          child: Column(
-            children: [
-              _DialogHeader(
-                title: _t('설정', '設定'),
-                subtitle: _t(
-                  '사용 방식과 화면 표시 옵션을 조정합니다.',
-                  '使い方と画面表示オプションを調整します。',
-                ),
-                closeTooltip: _t('닫기', '閉じる'),
-                onClose: () => Navigator.of(context).pop(),
-              ),
-              Divider(height: 1, color: surfaceTheme.border),
-              Expanded(
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    _SettingsSidebar(
-                      items: _tabs,
-                      selectedIndex: _selectedTab,
-                      onSelect: _selectTab,
-                      helperText: _t(
-                        '기존 Navi의 설정 모달처럼 왼쪽에서 항목을 고르고 오른쪽에서 내용을 조정하는 구조입니다.',
-                        '既存 Navi の設定モーダルのように、左で項目を選び、右で内容を調整する構成です。',
-                      ),
-                    ),
-                    Container(width: 1, color: surfaceTheme.border),
-                    Expanded(
-                      child: LayoutBuilder(
-                        builder: (context, constraints) {
-                          return SingleChildScrollView(
-                            controller: _bodyScrollController,
-                            padding: const EdgeInsets.all(20),
-                            child: Align(
-                              alignment: Alignment.topLeft,
-                              child: ConstrainedBox(
-                                constraints: BoxConstraints(
-                                  minWidth: constraints.maxWidth,
-                                ),
-                                child: _buildBody(context),
-                              ),
+              closeTooltip: _t('닫기', '閉じる'),
+              onClose: () => Navigator.of(context).pop(),
+            ),
+            Divider(height: 1, color: surfaceTheme.border),
+            Expanded(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  SizedBox(
+                    width: 230,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(18, 20, 16, 18),
+                      child: Column(
+                        children: [
+                          _SettingsNavTile(
+                            icon: Icons.home_rounded,
+                            title: _t('사용 방법', '使い方'),
+                            description: _t('기본 사용 설정', '基本の使い方'),
+                            selected: _selectedTab == 0,
+                            onTap: () => _selectTab(0),
+                          ),
+                          const SizedBox(height: 10),
+                          _SettingsNavTile(
+                            icon: Icons.mic_rounded,
+                            title: _t('말하기 설정', '話しかけ設定'),
+                            description: _t('음성 입력과 안내 설정', '音声入力と案内設定'),
+                            selected: _selectedTab == 1,
+                            onTap: () => _selectTab(1),
+                          ),
+                          const SizedBox(height: 10),
+                          _SettingsNavTile(
+                            icon: Icons.shield_outlined,
+                            title: _t('안전 설정', '安心設定'),
+                            description: _t('중요 작업 확인', '大切な操作の確認'),
+                            selected: _selectedTab == 2,
+                            onTap: () => _selectTab(2),
+                          ),
+                          const SizedBox(height: 10),
+                          _SettingsNavTile(
+                            icon: Icons.desktop_windows_outlined,
+                            title: _t('화면 보기', '画面表示'),
+                            description: _t('글자와 화면 크기', '文字と画面サイズ'),
+                            selected: _selectedTab == 3,
+                            onTap: () => _selectTab(3),
+                          ),
+                          const Spacer(),
+                          _InfoCallout(
+                            title: _t('알아두세요', 'ご案内'),
+                            description: _t(
+                              '설정은 이 PC에 저장되며, 저장하기를 눌러야 반영됩니다.',
+                              '設定はこの PC に保存され、保存を押すと反映されます。',
                             ),
-                          );
-                        },
+                          ),
+                        ],
                       ),
                     ),
-                  ],
-                ),
-              ),
-              Container(
-                padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
-                decoration: BoxDecoration(
-                  color: surfaceTheme.contentBackground,
-                  border: Border(top: BorderSide(color: surfaceTheme.border)),
-                  borderRadius:
-                      const BorderRadius.vertical(bottom: Radius.circular(24)),
-                ),
-                child: Row(
-                  children: [
-                    const Spacer(),
-                    OutlinedButton(
-                      onPressed: () => Navigator.of(context).pop(),
-                      child: Text(_t('취소', 'キャンセル')),
+                  ),
+                  Container(width: 1, color: surfaceTheme.border),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      controller: _bodyScrollController,
+                      padding: const EdgeInsets.fromLTRB(28, 24, 28, 20),
+                      child: _buildBody(context),
                     ),
-                    const SizedBox(width: 10),
-                    ElevatedButton(
-                      onPressed: () => Navigator.of(context).pop(_draft),
-                      child: Text(_t('저장', '保存')),
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-            ],
-          ),
+            ),
+            Container(
+              padding: const EdgeInsets.fromLTRB(24, 14, 24, 18),
+              decoration: BoxDecoration(
+                color: surfaceTheme.contentBackground,
+                border: Border(top: BorderSide(color: surfaceTheme.border)),
+                borderRadius:
+                    const BorderRadius.vertical(bottom: Radius.circular(28)),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      _t(
+                        '일부 설정은 아직 준비 중이며, 연결된 기능부터 먼저 저장됩니다.',
+                        '一部の設定は準備中で、接続済みの機能から先に保存されます。',
+                      ),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: surfaceTheme.textMuted,
+                        height: 1.35,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  OutlinedButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: Text(_t('취소', 'キャンセル')),
+                  ),
+                  const SizedBox(width: 10),
+                  ElevatedButton(
+                    onPressed: _save,
+                    child: Text(_t('저장하기', '保存する')),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -155,157 +190,456 @@ class _HomeSettingsDialogState extends State<HomeSettingsDialog> {
   Widget _buildBody(BuildContext context) {
     switch (_selectedTab) {
       case 0:
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _SectionTitle(_t('기본 설정', '基本設定')),
-            _ToggleCard(
-              title: _t('안전한 명령은 바로 실행', '安全な命令はすぐ実行'),
-              description: _t(
-                '위험도가 낮은 작업은 확인 없이 바로 진행합니다.',
-                '危険度が低い作業は確認なしですぐに進めます。',
-              ),
-              value: _draft.autoRunSafeCommands,
-              onChanged: (value) => setState(
-                () => _draft = _draft.copyWith(autoRunSafeCommands: value),
-              ),
-            ),
-            _ToggleCard(
-              title: _t('간단한 결과 요약 먼저 보기', 'やさしい結果要約を先に表示'),
-              description: _t(
-                '디버그 정보보다 사용자가 이해하기 쉬운 결과를 우선 보여줍니다.',
-                'デバッグ情報よりも利用者が分かりやすい結果を先に見せます。',
-              ),
-              value: _draft.showSimpleSummary,
-              onChanged: (value) => setState(
-                () => _draft = _draft.copyWith(showSimpleSummary: value),
-              ),
-            ),
-            _LanguageChoiceCard(
-              title: _t('기본 언어', '基本言語'),
-              description: _t(
-                '안내 문구와 기본 입력 예시에 사용할 언어입니다.',
-                '案内文と入力例に使う言語です。',
-              ),
-              value: _draft.preferredLanguage,
-              onSelected: (value) => setState(
-                () => _draft = _draft.copyWith(preferredLanguage: value),
-              ),
-              isJapanese: _isJapanese,
-            ),
-          ],
-        );
+        return _buildUsageTab(context);
       case 1:
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _SectionTitle(_t('음성 및 입력', '音声と入力')),
-            _ToggleCard(
-              title: _t('음성 입력 버튼 표시', '音声入力ボタンを表示'),
-              description: _t(
-                '홈 화면에서 음성 요청 버튼 자리를 항상 보이게 합니다.',
-                'ホーム画面で音声依頼ボタンをいつも表示します。',
-              ),
-              value: _draft.voiceInputEnabled,
-              onChanged: (value) => setState(
-                () => _draft = _draft.copyWith(voiceInputEnabled: value),
-              ),
-            ),
-            _SliderCard(
-              title: _t('마이크 감도', 'マイク感度'),
-              description: _t(
-                '음성 입력을 받을 때 반응 민감도를 조정합니다.',
-                '音声入力時の反応感度を調整します。',
-              ),
-              value: _draft.microphoneSensitivity,
-              min: 0.0,
-              max: 1.0,
-              onChanged: (value) => setState(
-                () => _draft = _draft.copyWith(microphoneSensitivity: value),
-              ),
-            ),
-            _SliderCard(
-              title: _t('안내 속도', '案内速度'),
-              description: _t(
-                '음성 안내나 단계 설명의 빠르기를 조정합니다.',
-                '音声案内や手順説明の速さを調整します。',
-              ),
-              value: _draft.guidanceSpeed,
-              min: 0.7,
-              max: 1.3,
-              onChanged: (value) => setState(
-                () => _draft = _draft.copyWith(guidanceSpeed: value),
-              ),
-            ),
-          ],
-        );
+        return _buildSpeechTab(context);
       case 2:
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _SectionTitle(_t('보안', 'セキュリティ')),
-            _ToggleCard(
-              title: _t('민감한 작업은 항상 확인', '重要な作業は必ず確認'),
-              description: _t(
-                '설정 변경이나 중요한 작업은 실행 전에 다시 묻습니다.',
-                '設定変更や重要な作業は実行前にもう一度確認します。',
-              ),
-              value: _draft.requireSensitiveApproval,
-              onChanged: (value) => setState(
-                () => _draft = _draft.copyWith(requireSensitiveApproval: value),
-              ),
-            ),
-            _ToggleCard(
-              title: _t('외부 사이트 이동 전 알려주기', '外部サイト移動前に案内'),
-              description: _t(
-                '새 웹사이트로 이동할 때 간단한 안내를 먼저 보여줍니다.',
-                '新しいWebサイトへ移動する前に案内を表示します。',
-              ),
-              value: _draft.warnBeforeExternalSites,
-              onChanged: (value) => setState(
-                () => _draft = _draft.copyWith(warnBeforeExternalSites: value),
-              ),
-            ),
-          ],
-        );
+        return _buildSafetyTab(context);
+      case 3:
       default:
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+        return _buildDisplayTab(context);
+    }
+  }
+
+  Widget _buildUsageTab(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _SectionHeader(
+          title: _t('사용 방법', '使い方'),
+          description: _t(
+            'VisionNavi 기본 사용 방법을 정해요.',
+            'VisionNavi の基本的な使い方を決めます。',
+          ),
+        ),
+        _SubSectionTitle(_t('언어 설정', '言語設定')),
+        _SubSectionDescription(
+          _t('앱에서 사용할 언어를 선택하세요.', 'アプリで使う言語を選んでください。'),
+        ),
+        const SizedBox(height: 12),
+        Row(
           children: [
-            _SectionTitle(_t('화면 설정', '画面設定')),
-            _ToggleCard(
-              title: _t('큰 글씨 사용', '大きな文字を使う'),
-              description: _t(
-                '고령자 사용에 맞게 주요 글자와 버튼을 조금 더 크게 보여줍니다.',
-                '高齢者向けに主要な文字とボタンを少し大きく表示します。',
+            Expanded(
+              child: _LanguageOptionCard(
+                label: '한국어',
+                shortLabel: 'KR',
+                selected: _draft.preferredLanguage == 'ko',
+                onTap: () => setState(
+                  () => _draft = _draft.copyWith(
+                    preferredLanguage: 'ko',
+                    wakeWordPhrase: _draft.wakeWordPhrase == 'ねえ、ナビ' ||
+                            _draft.wakeWordPhrase == 'ナビさん'
+                        ? '나비야'
+                        : _draft.wakeWordPhrase,
+                  ),
+                ),
               ),
-              value: _draft.largeText,
-              onChanged: (value) =>
-                  setState(() => _draft = _draft.copyWith(largeText: value)),
             ),
-            _ToggleCard(
-              title: _t('고대비 보기', '高コントラスト表示'),
-              description: _t(
-                '글자와 배경의 대비를 높여 읽기 쉽게 만듭니다.',
-                '文字と背景のコントラストを高めて読みやすくします。',
+            const SizedBox(width: 12),
+            Expanded(
+              child: _LanguageOptionCard(
+                label: '日本語',
+                shortLabel: 'JP',
+                selected: _draft.preferredLanguage == 'ja',
+                onTap: () => setState(
+                  () => _draft = _draft.copyWith(
+                    preferredLanguage: 'ja',
+                    wakeWordPhrase: _draft.wakeWordPhrase == '나비야' ||
+                            _draft.wakeWordPhrase == '헤이 나비'
+                        ? 'ねえ、ナビ'
+                        : _draft.wakeWordPhrase,
+                  ),
+                ),
               ),
-              value: _draft.highContrast,
-              onChanged: (value) =>
-                  setState(() => _draft = _draft.copyWith(highContrast: value)),
-            ),
-            _ToggleCard(
-              title: _t('어두운 화면 사용', 'ダーク画面を使う'),
-              description: _t(
-                '야간이나 저조도 환경에서 눈부심을 줄입니다.',
-                '夜間や暗い環境でまぶしさを減らします。',
-              ),
-              value: _draft.darkTheme,
-              onChanged: (value) =>
-                  setState(() => _draft = _draft.copyWith(darkTheme: value)),
             ),
           ],
-        );
+        ),
+        const SizedBox(height: 24),
+        _SubSectionTitle(_t('음성 안내', '音声案内')),
+        _SubSectionDescription(
+          _t('VisionNavi가 들려주는 안내 속도를 조절해요.', 'VisionNavi の案内速度を調整します。'),
+        ),
+        const SizedBox(height: 12),
+        _SliderSettingCard(
+          icon: Icons.record_voice_over_rounded,
+          color: const Color(0xFF8B5CF6),
+          title: _t('말하는 속도', '話す速さ'),
+          description: _t(
+            '안내 음성의 말하는 속도를 조절합니다.',
+            '案内音声の話す速さを調整します。',
+          ),
+          value: _draft.guidanceSpeed,
+          min: 0.7,
+          max: 1.3,
+          minLabel: _t('천천히', 'ゆっくり'),
+          centerLabel: _speedLabel(_draft.guidanceSpeed),
+          maxLabel: _t('빠르게', '速く'),
+          onChanged: (value) => setState(
+            () => _draft = _draft.copyWith(guidanceSpeed: value),
+          ),
+        ),
+        const SizedBox(height: 16),
+        _DisabledSettingCard(
+          icon: Icons.power_settings_new_rounded,
+          color: const Color(0xFF3B82F6),
+          title: _t('컴퓨터 시작할 때 함께 실행', 'パソコン起動時に一緒に実行'),
+          description: _t(
+            '현재 저장은 되지만 Windows 시작 프로그램 연결은 아직 준비 중입니다.',
+            '現在は保存のみで、Windows のスタートアップ連携は準備中です。',
+          ),
+          badge: _t('준비중', '準備中'),
+          value: _draft.startWithWindows,
+          onChanged: (value) => setState(
+            () => _draft = _draft.copyWith(startWithWindows: value),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSpeechTab(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _SectionHeader(
+          title: _t('말하기 설정', '話しかけ設定'),
+          description: _t(
+            '말로 요청하고 들을 때 관련된 설정을 조절합니다.',
+            '話しかけるときと聞き取るときの設定を調整します。',
+          ),
+        ),
+        _ToggleSettingCard(
+          icon: Icons.mic_rounded,
+          color: const Color(0xFF2563EB),
+          title: _t('말하기 버튼 표시', '話しかけボタン表示'),
+          description: _t(
+            '메인 화면에 말하기 버튼을 표시합니다.',
+            'メイン画面に話しかけボタンを表示します。',
+          ),
+          value: _draft.voiceInputEnabled,
+          onChanged: (value) => setState(
+            () => _draft = _draft.copyWith(voiceInputEnabled: value),
+          ),
+        ),
+        const SizedBox(height: 12),
+        _ToggleSettingCard(
+          icon: Icons.chat_bubble_outline_rounded,
+          color: const Color(0xFF22C55E),
+          title: _t('말을 마치면 바로 알아듣기', '話し終えたらすぐ理解する'),
+          description: _t(
+            '음성 입력 뒤 바로 명령 확인 단계로 넘어갑니다.',
+            '音声入力のあと、すぐに命令確認へ進みます。',
+          ),
+          value: _draft.voiceAutoInterpret,
+          onChanged: (value) => setState(
+            () => _draft = _draft.copyWith(voiceAutoInterpret: value),
+          ),
+        ),
+        const SizedBox(height: 12),
+        _ChoiceSettingCard(
+          icon: Icons.graphic_eq_rounded,
+          color: const Color(0xFF7C3AED),
+          title: _t('마이크 반응 정도', 'マイク反応の強さ'),
+          description: _t(
+            '작은 목소리를 얼마나 민감하게 들을지 정합니다.',
+            '小さな声をどれくらい敏感に聞くかを決めます。',
+          ),
+          options: [
+            _ChoiceOptionData(
+              label: _t('낮게', '低め'),
+              description: _t('큰 소리 위주로 듣기', '大きな声を中心に聞く'),
+              selected: _draft.microphoneSensitivity < 0.5,
+              onTap: () => setState(
+                () => _draft = _draft.copyWith(microphoneSensitivity: 0.35),
+              ),
+            ),
+            _ChoiceOptionData(
+              label: _t('보통', '普通'),
+              description: _t('일반적인 크기로 듣기', '一般的な大きさで聞く'),
+              selected: _draft.microphoneSensitivity >= 0.5 &&
+                  _draft.microphoneSensitivity < 0.8,
+              onTap: () => setState(
+                () => _draft = _draft.copyWith(microphoneSensitivity: 0.65),
+              ),
+            ),
+            _ChoiceOptionData(
+              label: _t('높게', '高め'),
+              description: _t('작은 소리도 잘 듣기', '小さな声もよく聞く'),
+              selected: _draft.microphoneSensitivity >= 0.8,
+              onTap: () => setState(
+                () => _draft = _draft.copyWith(microphoneSensitivity: 0.9),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        _DisabledSliderSettingCard(
+          icon: Icons.volume_up_rounded,
+          color: const Color(0xFFF59E0B),
+          title: _t('안내 음량', '案内音量'),
+          description: _t(
+            '설정 저장은 되지만 현재 앱 음성 출력 볼륨에는 직접 연결되지 않았습니다.',
+            '設定は保存されますが、現在はアプリ音声出力の音量へ直接は連携していません。',
+          ),
+          value: _draft.guidanceVolume,
+          min: 0.7,
+          max: 1.3,
+          minLabel: _t('낮게', '低め'),
+          centerLabel: _volumeLabel(_draft.guidanceVolume),
+          maxLabel: _t('크게', '大きく'),
+          onChanged: (value) => setState(
+            () => _draft = _draft.copyWith(guidanceVolume: value),
+          ),
+        ),
+        const SizedBox(height: 12),
+        _ToggleSettingCard(
+          icon: Icons.hearing_rounded,
+          color: const Color(0xFF2563EB),
+          title: _t('“나비야” 기다리기', '「ナビ」待機'),
+          description: _t(
+            '호출어를 들으면 바로 음성을 들을 준비를 합니다.',
+            '呼びかけを聞くと、すぐに音声を聞く準備をします。',
+          ),
+          value: _draft.wakeWordEnabled,
+          onChanged: (value) => setState(
+            () => _draft = _draft.copyWith(wakeWordEnabled: value),
+          ),
+        ),
+        const SizedBox(height: 12),
+        _ChoiceSettingCard(
+          icon: Icons.hearing_disabled_outlined,
+          color: const Color(0xFF4F46E5),
+          title: _t('호출어 반응 정도', '呼びかけ反応の強さ'),
+          description: _t(
+            '호출어를 어느 정도 민감하게 들을지 정합니다.',
+            '呼びかけをどれくらい敏感に聞くかを決めます。',
+          ),
+          options: [
+            _ChoiceOptionData(
+              label: _t('낮게', '低め'),
+              description: _t('정확한 발음 위주로 듣기', 'はっきりした発音を中心に聞く'),
+              selected: _draft.wakeWordThreshold >= 0.35,
+              onTap: () => setState(
+                () => _draft = _draft.copyWith(wakeWordThreshold: 0.4),
+              ),
+            ),
+            _ChoiceOptionData(
+              label: _t('보통', '普通'),
+              description: _t('일반적인 반응', '標準的な反応'),
+              selected: _draft.wakeWordThreshold >= 0.2 &&
+                  _draft.wakeWordThreshold < 0.35,
+              onTap: () => setState(
+                () => _draft = _draft.copyWith(wakeWordThreshold: 0.25),
+              ),
+            ),
+            _ChoiceOptionData(
+              label: _t('높게', '高め'),
+              description: _t('작은 소리에도 반응하기', '小さな声にも反応する'),
+              selected: _draft.wakeWordThreshold < 0.2,
+              onTap: () => setState(
+                () => _draft = _draft.copyWith(wakeWordThreshold: 0.12),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSafetyTab(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _SectionHeader(
+          title: _t('안전 설정', '安心設定'),
+          description: _t(
+            '중요한 작업 전 안내와 확인 방식을 정합니다.',
+            '大切な作業の前にどう案内し確認するかを決めます。',
+          ),
+        ),
+        _InfoCallout(
+          title: _t('현재 상태', '現在の状態'),
+          description: _t(
+            '이 항목들은 저장은 되지만 오케스트레이터 정책에 아직 직접 연결되지 않았습니다.',
+            'これらの項目は保存されますが、まだオーケストレーターの実行ポリシーには直接連携していません。',
+          ),
+          badge: _t('준비중', '準備中'),
+        ),
+        const SizedBox(height: 14),
+        _DisabledSettingCard(
+          icon: Icons.help_outline_rounded,
+          color: const Color(0xFF2563EB),
+          title: _t('중요한 작업은 다시 물어보기', '大切な作業はもう一度確認'),
+          description: _t(
+            '삭제, 결제, 개인정보 입력 같은 작업 전에 다시 확인합니다.',
+            '削除、決済、個人情報入力の前にもう一度確認します。',
+          ),
+          badge: _t('준비중', '準備中'),
+          value: _draft.requireSensitiveApproval,
+          onChanged: (value) => setState(
+            () => _draft = _draft.copyWith(requireSensitiveApproval: value),
+          ),
+        ),
+        const SizedBox(height: 12),
+        _DisabledSettingCard(
+          icon: Icons.open_in_new_rounded,
+          color: const Color(0xFF0EA5E9),
+          title: _t('다른 사이트로 이동 전에 알려주기', '別サイト移動前に知らせる'),
+          description: _t(
+            '새 사이트나 외부 프로그램을 열기 전에 먼저 알려줍니다.',
+            '新しいサイトや外部プログラムを開く前に先に知らせます。',
+          ),
+          badge: _t('준비중', '準備中'),
+          value: _draft.warnBeforeExternalSites,
+          onChanged: (value) => setState(
+            () => _draft = _draft.copyWith(warnBeforeExternalSites: value),
+          ),
+        ),
+        const SizedBox(height: 12),
+        _DisabledSettingCard(
+          icon: Icons.badge_outlined,
+          color: const Color(0xFF22C55E),
+          title: _t('개인정보 입력 전에 확인하기', '個人情報入力前に確認'),
+          description: _t(
+            '이름, 전화번호, 주소를 넣기 전에 다시 확인합니다.',
+            '名前、電話番号、住所を入れる前に再確認します。',
+          ),
+          badge: _t('준비중', '準備中'),
+          value: _draft.confirmPersonalInfoInput,
+          onChanged: (value) => setState(
+            () => _draft = _draft.copyWith(confirmPersonalInfoInput: value),
+          ),
+        ),
+        const SizedBox(height: 12),
+        _DisabledSettingCard(
+          icon: Icons.warning_amber_rounded,
+          color: const Color(0xFFF59E0B),
+          title: _t('삭제나 결제는 항상 확인하기', '削除や決済は常に確認'),
+          description: _t(
+            '위험한 작업은 반드시 다시 물어본 뒤 실행합니다.',
+            '危険な作業は必ず再確認してから実行します。',
+          ),
+          badge: _t('준비중', '準備中'),
+          value: _draft.alwaysConfirmDestructiveActions,
+          onChanged: (value) => setState(
+            () => _draft = _draft.copyWith(
+              alwaysConfirmDestructiveActions: value,
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        _DisabledSettingCard(
+          icon: Icons.campaign_outlined,
+          color: const Color(0xFF8B5CF6),
+          title: _t('실행 결과를 자세히 알려주기', '実行結果を詳しく知らせる'),
+          description: _t(
+            '작업이 어떻게 끝났는지 더 자세한 안내를 제공합니다.',
+            '作業がどう終わったかを、より詳しく案内します。',
+          ),
+          badge: _t('준비중', '準備中'),
+          value: _draft.verboseResultGuidance,
+          onChanged: (value) => setState(
+            () => _draft = _draft.copyWith(verboseResultGuidance: value),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildDisplayTab(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _SectionHeader(
+          title: _t('화면 보기', '画面表示'),
+          description: _t(
+            '글자와 화면을 보기 쉽게 조절해요.',
+            '文字と画面を見やすく調整します。',
+          ),
+        ),
+        _ToggleSettingCard(
+          icon: Icons.text_fields_rounded,
+          color: const Color(0xFF2563EB),
+          title: _t('큰 글씨 사용', '大きい文字を使う'),
+          description: _t(
+            '글자를 더 크게 보여줍니다.',
+            '文字をより大きく表示します。',
+          ),
+          value: _draft.largeText,
+          onChanged: (value) => setState(
+            () => _draft = _draft.copyWith(largeText: value),
+          ),
+        ),
+        const SizedBox(height: 12),
+        _ToggleSettingCard(
+          icon: Icons.wb_sunny_outlined,
+          color: const Color(0xFF22C55E),
+          title: _t('또렷하게 보기', 'くっきり表示'),
+          description: _t(
+            '글자와 버튼의 대비를 높여 더 또렷하게 보여줍니다.',
+            '文字やボタンのコントラストを高めてくっきり表示します。',
+          ),
+          value: _draft.highContrast,
+          onChanged: (value) => setState(
+            () => _draft = _draft.copyWith(
+              highContrast: value,
+              darkTheme: value ? false : _draft.darkTheme,
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        _ToggleSettingCard(
+          icon: Icons.dark_mode_outlined,
+          color: const Color(0xFF7C3AED),
+          title: _t('다크 모드', 'ダークモード'),
+          description: _t(
+            '눈부심을 줄이도록 어두운 화면으로 바꿉니다.',
+            'まぶしさを減らすため暗い画面に切り替えます。',
+          ),
+          value: _draft.darkTheme,
+          onChanged: (value) => setState(
+            () => _draft = _draft.copyWith(
+              darkTheme: value,
+              highContrast: value ? false : _draft.highContrast,
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        _ToggleSettingCard(
+          icon: Icons.desktop_windows_outlined,
+          color: const Color(0xFFF59E0B),
+          title: _t('화면 크기 조절', '画面サイズ調整'),
+          description: _t(
+            '앱 안의 글자와 요소를 조금 더 크게 표시합니다.',
+            'アプリ内の文字や要素を少し大きく表示します。',
+          ),
+          value: _draft.screenScaleEnabled,
+          onChanged: (value) => setState(
+            () => _draft = _draft.copyWith(screenScaleEnabled: value),
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _speedLabel(double value) {
+    if (value < 0.9) {
+      return _t('천천히', 'ゆっくり');
     }
+    if (value > 1.1) {
+      return _t('빠르게', '速く');
+    }
+    return _t('보통', '普通');
+  }
+
+  String _volumeLabel(double value) {
+    if (value < 0.9) {
+      return _t('낮게', '低め');
+    }
+    if (value > 1.1) {
+      return _t('크게', '大きく');
+    }
+    return _t('보통', '普通');
   }
 }
 
@@ -328,19 +662,25 @@ class _DialogHeader extends StatelessWidget {
     final surfaceTheme = theme.extension<AppSurfaceTheme>()!;
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 22, 16, 18),
+      padding: const EdgeInsets.fromLTRB(24, 22, 14, 18),
       child: Row(
         children: [
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: theme.textTheme.headlineSmall),
-                const SizedBox(height: 6),
+                Text(
+                  title,
+                  style: theme.textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 8),
                 Text(
                   subtitle,
-                  style: theme.textTheme.bodyMedium?.copyWith(
+                  style: theme.textTheme.bodyLarge?.copyWith(
                     color: surfaceTheme.textMuted,
+                    height: 1.45,
                   ),
                 ),
               ],
@@ -348,8 +688,8 @@ class _DialogHeader extends StatelessWidget {
           ),
           IconButton(
             onPressed: onClose,
-            icon: const Icon(Icons.close_rounded),
             tooltip: closeTooltip,
+            icon: const Icon(Icons.close_rounded, size: 32),
           ),
         ],
       ),
@@ -357,70 +697,91 @@ class _DialogHeader extends StatelessWidget {
   }
 }
 
-class _SettingsSidebar extends StatelessWidget {
-  const _SettingsSidebar({
-    required this.items,
-    required this.selectedIndex,
-    required this.onSelect,
-    required this.helperText,
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader({
+    required this.title,
+    required this.description,
   });
 
-  final List<String> items;
-  final int selectedIndex;
-  final ValueChanged<int> onSelect;
-  final String helperText;
+  final String title;
+  final String description;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final surfaceTheme = theme.extension<AppSurfaceTheme>()!;
-
-    return SizedBox(
-      width: 190,
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          children: [
-            for (var index = 0; index < items.length; index++) ...[
-              _SidebarItem(
-                label: items[index],
-                selected: index == selectedIndex,
-                onTap: () => onSelect(index),
-              ),
-              if (index != items.length - 1) const SizedBox(height: 8),
-            ],
-            const Spacer(),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: surfaceTheme.contentBackground,
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: surfaceTheme.border),
-              ),
-              child: Text(
-                helperText,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: surfaceTheme.textMuted,
-                  height: 1.5,
-                ),
-              ),
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 22),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: theme.textTheme.headlineSmall?.copyWith(
+              fontWeight: FontWeight.w800,
             ),
-          ],
-        ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            description,
+            style: theme.textTheme.titleMedium?.copyWith(
+              color: surfaceTheme.textMuted,
+            ),
+          ),
+        ],
       ),
     );
   }
 }
 
-class _SidebarItem extends StatelessWidget {
-  const _SidebarItem({
-    required this.label,
+class _SubSectionTitle extends StatelessWidget {
+  const _SubSectionTitle(this.title);
+
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      title,
+      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+            fontWeight: FontWeight.w800,
+          ),
+    );
+  }
+}
+
+class _SubSectionDescription extends StatelessWidget {
+  const _SubSectionDescription(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final surfaceTheme = Theme.of(context).extension<AppSurfaceTheme>()!;
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Text(
+        text,
+        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+              color: surfaceTheme.textMuted,
+            ),
+      ),
+    );
+  }
+}
+
+class _SettingsNavTile extends StatelessWidget {
+  const _SettingsNavTile({
+    required this.icon,
+    required this.title,
+    required this.description,
     required this.selected,
     required this.onTap,
   });
 
-  final String label;
+  final IconData icon;
+  final String title;
+  final String description;
   final bool selected;
   final VoidCallback onTap;
 
@@ -428,26 +789,159 @@ class _SidebarItem extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final surfaceTheme = theme.extension<AppSurfaceTheme>()!;
-
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(16),
+      borderRadius: BorderRadius.circular(20),
       child: Ink(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
         decoration: BoxDecoration(
-          color: selected ? theme.colorScheme.primary.withValues(alpha: 0.12) : null,
-          borderRadius: BorderRadius.circular(16),
+          color: selected
+              ? theme.colorScheme.primary.withValues(alpha: 0.08)
+              : surfaceTheme.surface,
+          borderRadius: BorderRadius.circular(20),
           border: Border.all(
             color: selected ? theme.colorScheme.primary : surfaceTheme.border,
           ),
         ),
         child: Row(
           children: [
+            Icon(
+              icon,
+              size: 26,
+              color: selected
+                  ? theme.colorScheme.primary
+                  : surfaceTheme.textPrimary,
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    description,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: surfaceTheme.textMuted,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _InfoCallout extends StatelessWidget {
+  const _InfoCallout({
+    required this.title,
+    required this.description,
+    this.badge,
+  });
+
+  final String title;
+  final String description;
+  final String? badge;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final surfaceTheme = theme.extension<AppSurfaceTheme>()!;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.primary.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: surfaceTheme.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Text(
+                title,
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              if (badge != null) ...[
+                const SizedBox(width: 8),
+                _StatusBadge(label: badge!),
+              ],
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            description,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: surfaceTheme.textMuted,
+              height: 1.4,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LanguageOptionCard extends StatelessWidget {
+  const _LanguageOptionCard({
+    required this.label,
+    required this.shortLabel,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final String shortLabel;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final surfaceTheme = theme.extension<AppSurfaceTheme>()!;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(18),
+      child: Ink(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+        decoration: BoxDecoration(
+          color: selected
+              ? theme.colorScheme.primary.withValues(alpha: 0.08)
+              : surfaceTheme.surface,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+            color: selected ? theme.colorScheme.primary : surfaceTheme.border,
+          ),
+        ),
+        child: Row(
+          children: [
+            Text(
+              shortLabel,
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(width: 12),
             Expanded(
               child: Text(
                 label,
-                style: theme.textTheme.bodyLarge?.copyWith(
-                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                style: theme.textTheme.titleMedium?.copyWith(
+                  color: selected
+                      ? theme.colorScheme.primary
+                      : surfaceTheme.textPrimary,
+                  fontWeight: FontWeight.w800,
                 ),
               ),
             ),
@@ -458,28 +952,130 @@ class _SidebarItem extends StatelessWidget {
   }
 }
 
-class _SectionTitle extends StatelessWidget {
-  const _SectionTitle(this.title);
+class _ChoiceOptionData {
+  const _ChoiceOptionData({
+    required this.label,
+    required this.description,
+    required this.selected,
+    required this.onTap,
+  });
 
+  final String label;
+  final String description;
+  final bool selected;
+  final VoidCallback onTap;
+}
+
+class _ChoiceSettingCard extends StatelessWidget {
+  const _ChoiceSettingCard({
+    required this.icon,
+    required this.color,
+    required this.title,
+    required this.description,
+    required this.options,
+  });
+
+  final IconData icon;
+  final Color color;
   final String title;
+  final String description;
+  final List<_ChoiceOptionData> options;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Text(title, style: Theme.of(context).textTheme.titleLarge),
+    final theme = Theme.of(context);
+    final surfaceTheme = theme.extension<AppSurfaceTheme>()!;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: surfaceTheme.surface,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: surfaceTheme.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _CardTitleRow(
+            icon: icon,
+            color: color,
+            title: title,
+            description: description,
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              for (var index = 0; index < options.length; index++) ...[
+                Expanded(
+                  child: _ChoiceOptionTile(option: options[index]),
+                ),
+                if (index != options.length - 1) const SizedBox(width: 10),
+              ],
+            ],
+          ),
+        ],
+      ),
     );
   }
 }
 
-class _ToggleCard extends StatelessWidget {
-  const _ToggleCard({
+class _ChoiceOptionTile extends StatelessWidget {
+  const _ChoiceOptionTile({required this.option});
+
+  final _ChoiceOptionData option;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return InkWell(
+      onTap: option.onTap,
+      borderRadius: BorderRadius.circular(16),
+      child: Ink(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+        decoration: BoxDecoration(
+          color: option.selected
+              ? theme.colorScheme.primary.withValues(alpha: 0.08)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: option.selected
+                ? theme.colorScheme.primary
+                : theme.dividerColor,
+          ),
+        ),
+        child: Column(
+          children: [
+            Text(
+              option.label,
+              style: theme.textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              option.description,
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodySmall,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ToggleSettingCard extends StatelessWidget {
+  const _ToggleSettingCard({
+    required this.icon,
+    required this.color,
     required this.title,
     required this.description,
     required this.value,
     required this.onChanged,
   });
 
+  final IconData icon;
+  final Color color;
   final String title;
   final String description;
   final bool value;
@@ -487,167 +1083,347 @@ class _ToggleCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final surfaceTheme = theme.extension<AppSurfaceTheme>()!;
-
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(title, style: theme.textTheme.titleMedium),
-                  const SizedBox(height: 6),
-                  Text(
-                    description,
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      color: surfaceTheme.textMuted,
-                      height: 1.5,
-                    ),
-                  ),
-                ],
-              ),
+    final surfaceTheme = Theme.of(context).extension<AppSurfaceTheme>()!;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: surfaceTheme.surface,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: surfaceTheme.border),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: _CardTitleRow(
+              icon: icon,
+              color: color,
+              title: title,
+              description: description,
             ),
-            const SizedBox(width: 16),
-            Switch(value: value, onChanged: onChanged),
-          ],
-        ),
+          ),
+          const SizedBox(width: 16),
+          Switch(
+            value: value,
+            onChanged: onChanged,
+          ),
+        ],
       ),
     );
   }
 }
 
-class _SliderCard extends StatelessWidget {
-  const _SliderCard({
+class _DisabledSettingCard extends StatelessWidget {
+  const _DisabledSettingCard({
+    required this.icon,
+    required this.color,
+    required this.title,
+    required this.description,
+    required this.badge,
+    required this.value,
+    required this.onChanged,
+  });
+
+  final IconData icon;
+  final Color color;
+  final String title;
+  final String description;
+  final String badge;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final surfaceTheme = theme.extension<AppSurfaceTheme>()!;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: surfaceTheme.surface,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: surfaceTheme.border),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: _CardTitleRow(
+                        icon: icon,
+                        color: color,
+                        title: title,
+                        description: description,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    _StatusBadge(label: badge),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 16),
+          Opacity(
+            opacity: 0.55,
+            child: IgnorePointer(
+              child: Switch(
+                value: value,
+                onChanged: onChanged,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SliderSettingCard extends StatelessWidget {
+  const _SliderSettingCard({
+    required this.icon,
+    required this.color,
     required this.title,
     required this.description,
     required this.value,
     required this.min,
     required this.max,
+    required this.minLabel,
+    required this.centerLabel,
+    required this.maxLabel,
     required this.onChanged,
   });
 
+  final IconData icon;
+  final Color color;
   final String title;
   final String description;
   final double value;
   final double min;
   final double max;
+  final String minLabel;
+  final String centerLabel;
+  final String maxLabel;
   final ValueChanged<double> onChanged;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final surfaceTheme = theme.extension<AppSurfaceTheme>()!;
-
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title, style: theme.textTheme.titleMedium),
-            const SizedBox(height: 6),
-            Text(
-              description,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: surfaceTheme.textMuted,
-                height: 1.5,
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: surfaceTheme.surface,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: surfaceTheme.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _CardTitleRow(
+            icon: icon,
+            color: color,
+            title: title,
+            description: description,
+          ),
+          const SizedBox(height: 14),
+          Slider(
+            value: value,
+            min: min,
+            max: max,
+            onChanged: onChanged,
+          ),
+          Row(
+            children: [
+              Text(minLabel, style: theme.textTheme.bodySmall),
+              const Spacer(),
+              Text(
+                centerLabel,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
               ),
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: Slider(
-                    value: value,
-                    min: min,
-                    max: max,
-                    onChanged: onChanged,
-                  ),
-                ),
-                SizedBox(
-                  width: 48,
-                  child: Text(
-                    value.toStringAsFixed(2),
-                    textAlign: TextAlign.right,
-                    style: theme.textTheme.bodyMedium,
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
+              const Spacer(),
+              Text(maxLabel, style: theme.textTheme.bodySmall),
+            ],
+          ),
+        ],
       ),
     );
   }
 }
 
-class _LanguageChoiceCard extends StatelessWidget {
-  const _LanguageChoiceCard({
+class _DisabledSliderSettingCard extends StatelessWidget {
+  const _DisabledSliderSettingCard({
+    required this.icon,
+    required this.color,
     required this.title,
     required this.description,
     required this.value,
-    required this.onSelected,
-    required this.isJapanese,
+    required this.min,
+    required this.max,
+    required this.minLabel,
+    required this.centerLabel,
+    required this.maxLabel,
+    required this.onChanged,
   });
 
+  final IconData icon;
+  final Color color;
   final String title;
   final String description;
-  final String value;
-  final ValueChanged<String> onSelected;
-  final bool isJapanese;
+  final double value;
+  final double min;
+  final double max;
+  final String minLabel;
+  final String centerLabel;
+  final String maxLabel;
+  final ValueChanged<double> onChanged;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final surfaceTheme = theme.extension<AppSurfaceTheme>()!;
-    final options = [
-      (
-        value: '한국어',
-        label: isJapanese ? '韓国語' : '한국어',
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: surfaceTheme.surface,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: surfaceTheme.border),
       ),
-      (
-        value: '일본어',
-        label: isJapanese ? '日本語' : '일본어',
-      ),
-    ];
-
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title, style: theme.textTheme.titleMedium),
-            const SizedBox(height: 6),
-            Text(
-              description,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: surfaceTheme.textMuted,
-                height: 1.5,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: _CardTitleRow(
+                  icon: icon,
+                  color: color,
+                  title: title,
+                  description: description,
+                ),
+              ),
+              const SizedBox(width: 8),
+              const _StatusBadge(label: '준비중'),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Opacity(
+            opacity: 0.55,
+            child: IgnorePointer(
+              child: Slider(
+                value: value,
+                min: min,
+                max: max,
+                onChanged: onChanged,
               ),
             ),
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: [
-                for (final option in options)
-                  ChoiceChip(
-                    label: Text(option.label),
-                    selected: value == option.value,
-                    onSelected: (_) => onSelected(option.value),
-                  ),
-              ],
-            ),
-          ],
+          ),
+          Row(
+            children: [
+              Text(minLabel, style: theme.textTheme.bodySmall),
+              const Spacer(),
+              Text(
+                centerLabel,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const Spacer(),
+              Text(maxLabel, style: theme.textTheme.bodySmall),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CardTitleRow extends StatelessWidget {
+  const _CardTitleRow({
+    required this.icon,
+    required this.color,
+    required this.title,
+    required this.description,
+  });
+
+  final IconData icon;
+  final Color color;
+  final String title;
+  final String description;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final surfaceTheme = theme.extension<AppSurfaceTheme>()!;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 48,
+          height: 48,
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Icon(icon, color: color, size: 24),
+        ),
+        const SizedBox(width: 14),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                description,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: surfaceTheme.textMuted,
+                  height: 1.35,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _StatusBadge extends StatelessWidget {
+  const _StatusBadge({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.primary.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: theme.colorScheme.primary.withValues(alpha: 0.22)),
+      ),
+      child: Text(
+        label,
+        style: theme.textTheme.labelMedium?.copyWith(
+          color: theme.colorScheme.primary,
+          fontWeight: FontWeight.w800,
         ),
       ),
     );

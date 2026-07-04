@@ -1,17 +1,19 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:record/record.dart';
 import 'package:speech_to_text/speech_recognition_error.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart';
+import 'package:window_manager/window_manager.dart';
 
 import '../../../../app/theme/app_theme.dart';
 import '../../../../app/theme/colors.dart';
-import '../../../../app/theme/typography.dart';
 import '../models/home_user_settings.dart';
 import '../services/home_settings_store.dart';
 import '../../../models/session_models.dart';
@@ -30,12 +32,11 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final TextEditingController _controller = TextEditingController(
-    text:
-        'Search Naver for Incheon youth monthly rent support and read the conditions.',
-  );
+  final TextEditingController _controller = TextEditingController();
   final OrchestratorClient _client = OrchestratorClient();
   final SpeechToText _speechToText = SpeechToText();
+  final AudioRecorder _audioRecorder = AudioRecorder();
+  final AudioRecorder _wakeWordLevelRecorder = AudioRecorder();
 
   StreamSubscription<SessionEvent>? _sessionSubscription;
   CanonicalCommand? _command;
@@ -50,15 +51,36 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isCanonicalizing = false;
   String _selectedExecutionChannel = 'external';
   bool _debugMode = false;
+  bool _showTextComposer = false;
   HomeUserSettings _userSettings = const HomeUserSettings();
   bool _isListening = false;
   bool _speechAvailable = false;
   bool _speechBusy = false;
+  bool _isRecordingFallback = false;
+  bool _isWakeWordMonitoring = false;
+  bool _isWakeWordLevelMonitoring = false;
   String? _speechMessage;
   String? _speechLocaleId;
   String? _attachedVoiceFilePath;
   String? _lastExecutionPopupKey;
-
+  StreamSubscription<Uint8List>? _liveAudioSubscription;
+  StreamSubscription<Uint8List>? _wakeWordLevelSubscription;
+  Timer? _liveTranscriptionTimer;
+  Timer? _liveSilenceTimer;
+  BytesBuilder? _liveAudioBytes;
+  bool _liveTranscriptionInFlight = false;
+  Completer<void>? _liveTranscriptionCompleter;
+  int _liveTranscriptionGeneration = 0;
+  String _liveTranscriptionText = '';
+  double _liveAudioPeakLevel = 0;
+  bool _liveAudioSignalDetected = false;
+  DateTime? _liveRecordingStartedAt;
+  DateTime? _lastLiveSpeechDetectedAt;
+  bool _isAutoStoppingRecordedVoice = false;
+  double _wakeWordAudioPeakLevel = 0;
+  Timer? _wakeWordStatusPollTimer;
+  Timer? _wakeWordRearmTimer;
+  Timer? _audioDiagnosticsPollTimer;
   @override
   void initState() {
     super.initState();
@@ -69,6 +91,15 @@ class _HomeScreenState extends State<HomeScreen> {
   void dispose() {
     _sessionSubscription?.cancel();
     _speechToText.cancel();
+    _liveAudioSubscription?.cancel();
+    _wakeWordLevelSubscription?.cancel();
+    _liveTranscriptionTimer?.cancel();
+    _liveSilenceTimer?.cancel();
+    _wakeWordStatusPollTimer?.cancel();
+    _wakeWordRearmTimer?.cancel();
+    _audioDiagnosticsPollTimer?.cancel();
+    _audioRecorder.dispose();
+    _wakeWordLevelRecorder.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -100,6 +131,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _sessionMetadata = const {};
       _status = 'Interpreting';
       _phase = 'canonicalize';
+      _speechMessage = _commandProgressMessage(text);
     });
 
     try {
@@ -111,6 +143,11 @@ class _HomeScreenState extends State<HomeScreen> {
         _command = command;
         _status = 'Ready';
         _phase = 'review';
+        _speechMessage = _commandProgressMessage(
+          command.normalizedText.trim().isNotEmpty
+              ? command.normalizedText
+              : command.rawText,
+        );
       });
     } catch (error) {
       if (!mounted) {
@@ -126,6 +163,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _isCanonicalizing = false;
         });
       }
+      _queueWakeWordRearm();
     }
   }
 
@@ -219,6 +257,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _status = 'Error';
         _isSubmitting = false;
       });
+      _queueWakeWordRearm();
     }
   }
 
@@ -290,6 +329,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _isSubmitting = false;
       });
       _maybeShowExecutionPopup();
+      _queueWakeWordRearm();
     } catch (_) {
       if (!mounted) {
         return;
@@ -297,7 +337,32 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() {
         _isSubmitting = false;
       });
+      _queueWakeWordRearm();
     }
+  }
+
+  bool _canRearmWakeWord() {
+    return mounted &&
+        _userSettings.wakeWordEnabled &&
+        !_isWakeWordMonitoring &&
+        !_isRecordingFallback &&
+        !_isListening &&
+        !_speechBusy &&
+        !_isSubmitting &&
+        !_isCanonicalizing;
+  }
+
+  void _queueWakeWordRearm([Duration delay = const Duration(seconds: 1)]) {
+    _wakeWordRearmTimer?.cancel();
+    if (!_userSettings.wakeWordEnabled) {
+      return;
+    }
+    _wakeWordRearmTimer = Timer(delay, () async {
+      if (!_canRearmWakeWord()) {
+        return;
+      }
+      await _startWakeWordMonitoring(autoStarted: true);
+    });
   }
 
   String _toTitleCase(String value) {
@@ -326,7 +391,8 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     _lastExecutionPopupKey = popupKey;
 
-    final isFailed = _isFailedResult(result) || status == 'error' || status == 'canceled';
+    final isFailed =
+        _isFailedResult(result) || status == 'error' || status == 'canceled';
     final popupState =
         isFailed ? TaskbarPopupState.error : TaskbarPopupState.success;
     final popupThemeMode = _userSettings.highContrast
@@ -361,7 +427,7 @@ class _HomeScreenState extends State<HomeScreen> {
         final response = await _client.generatePopupSummary(
           command: command,
           result: result,
-          language: _isJapanese ? 'ja' : 'ko',
+          language: _preferredLanguageCode(),
         );
         if (response.title.trim().isNotEmpty) {
           title = response.title.trim();
@@ -497,6 +563,7 @@ class _HomeScreenState extends State<HomeScreen> {
     ];
     return welfareKeywords.any(normalizedText.contains);
   }
+
   Future<void> _showExecutionPopup({
     required String title,
     required String message,
@@ -515,6 +582,29 @@ class _HomeScreenState extends State<HomeScreen> {
       _showSnackBar('$title\n$message');
     }
   }
+
+  TaskbarPopupThemeMode _currentPopupThemeMode() {
+    if (_userSettings.highContrast) {
+      return TaskbarPopupThemeMode.contrast;
+    }
+    if (_userSettings.darkTheme) {
+      return TaskbarPopupThemeMode.dark;
+    }
+    return TaskbarPopupThemeMode.light;
+  }
+
+  Future<void> _showWakeWordListeningPopup() async {
+    await _showExecutionPopup(
+      title: _ux('말씀을 듣고있어요', 'お話を聞いています'),
+      message: _ux(
+        '이제 하시고 싶은 일을 말씀해 주세요.',
+        '続けて、してほしいことを話してください。',
+      ),
+      state: TaskbarPopupState.processing,
+      themeMode: _currentPopupThemeMode(),
+    );
+  }
+
   String _prettyJson(Object? value) {
     if (value == null) {
       return '{}';
@@ -641,180 +731,327 @@ class _HomeScreenState extends State<HomeScreen> {
   void _applyPresetCommand(String command) {
     setState(() {
       _controller.text = command;
+      _showTextComposer = true;
     });
   }
 
+  void _toggleTextComposer() {
+    setState(() {
+      _showTextComposer = !_showTextComposer;
+    });
+  }
+
+  Future<void> _minimizeWindow() async {
+    await windowManager.minimize();
+  }
+
+  Future<void> _toggleMaximizeWindow() async {
+    return;
+  }
+
+  Future<void> _closeWindow() async {
+    await windowManager.close();
+  }
+
   Future<void> _openSettingsDialog() async {
+    final wasWakeWordEnabled = _userSettings.wakeWordEnabled;
+    final scopedTheme = Theme.of(context);
     final next = await showDialog<HomeUserSettings>(
       context: context,
       barrierDismissible: true,
-      builder: (context) => HomeSettingsDialog(initialSettings: _userSettings),
+      builder: (dialogContext) => Theme(
+        data: scopedTheme,
+        child: HomeSettingsDialog(initialSettings: _userSettings),
+      ),
     );
     if (!mounted || next == null) {
       return;
     }
+    final enforced = _normalizeVoiceSettings(next);
     setState(() {
-      _userSettings = next;
+      _userSettings = enforced;
       _speechLocaleId = null;
     });
-    await HomeSettingsStore.instance.save(next);
+    await HomeSettingsStore.instance.save(enforced);
+    await _primeSpeechRecognizer();
+    await _syncWakeWordMonitoring(
+      previousEnabled: wasWakeWordEnabled,
+      currentEnabled: enforced.wakeWordEnabled,
+    );
+  }
+
+  Future<void> _openHelpDialog() async {
+    final scopedTheme = Theme.of(context);
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        final theme = scopedTheme;
+        final surfaceTheme = theme.extension<AppSurfaceTheme>()!;
+        return Theme(
+          data: scopedTheme,
+          child: AlertDialog(
+            backgroundColor: surfaceTheme.surface,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(24),
+            ),
+            title: Text(_ux('도움말', 'ヘルプ')),
+            content: SizedBox(
+              width: 480,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _ux(
+                      'VisionNavi는 말하거나 입력한 요청을 대신 도와드리는 앱입니다.',
+                      'VisionNavi は話したり入力したお願いを代わりに手伝うアプリです。',
+                    ),
+                    style: theme.textTheme.bodyLarge?.copyWith(height: 1.6),
+                  ),
+                  const SizedBox(height: 18),
+                  Text(
+                    _ux('이렇게 시작해 보세요', 'このように始めてみてください'),
+                    style: theme.textTheme.titleMedium,
+                  ),
+                  const SizedBox(height: 10),
+                  ...[
+                    _ux('말하기 시작 버튼을 누르고 말씀해 주세요.', '話し始めるボタンを押して話してください。'),
+                    _ux('글자로 입력하기를 눌러 직접 입력할 수도 있어요.',
+                        '文字で入力するを押して直接入力することもできます。'),
+                    _ux('예시 문장을 눌러서 바로 시작할 수도 있어요.', '例文を押してすぐ始めることもできます。'),
+                  ].map(
+                    (line) => Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        '• $line',
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: surfaceTheme.textMuted,
+                          height: 1.5,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              ElevatedButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: Text(_ux('확인', '確認')),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   Future<void> _loadUserSettings() async {
-    final loaded = await HomeSettingsStore.instance.load();
+    final loaded = _normalizeVoiceSettings(
+      await HomeSettingsStore.instance.load(),
+    );
     if (!mounted) {
       return;
     }
     setState(() {
       _userSettings = loaded;
     });
-  }
-
-  Future<void> _pickVoiceFile() async {
-    final file = await openFile(
-      acceptedTypeGroups: const [
-        XTypeGroup(
-          label: 'audio',
-          extensions: ['wav', 'mp3', 'm4a', 'aac', 'ogg', 'flac'],
-        ),
-      ],
+    await HomeSettingsStore.instance.save(loaded);
+    _ensureAudioDiagnosticsPolling();
+    await _primeSpeechRecognizer();
+    await _syncWakeWordMonitoring(
+      previousEnabled: false,
+      currentEnabled: loaded.wakeWordEnabled,
     );
-    if (!mounted || file == null) {
-      return;
-    }
-    final stagedPath = await _stageVoiceFileForTranscription(file);
-    if (!mounted || stagedPath == null) {
-      return;
-    }
-    setState(() {
-      _attachedVoiceFilePath = stagedPath;
-      _speechMessage = _ux(
-        '음성 파일을 첨부했습니다. 전사를 시작합니다.',
-        '音声ファイルを添付しました。文字起こしを始めます。',
-      );
-    });
-    await _transcribeAttachedVoiceFile(stagedPath);
   }
 
-  Future<String?> _stageVoiceFileForTranscription(XFile file) async {
-    try {
-      final sourcePath = file.path;
-      final sourceFile = sourcePath.isEmpty ? null : File(sourcePath);
-      final cacheDir = Directory(
-        '${Directory.systemTemp.path}${Platform.pathSeparator}visionnavi_audio_uploads',
-      );
-      if (!await cacheDir.exists()) {
-        await cacheDir.create(recursive: true);
-      }
-
-      final originalName = sourcePath.isNotEmpty
-          ? sourcePath.split(Platform.pathSeparator).last
-          : file.name;
-      final extensionIndex = originalName.lastIndexOf('.');
-      final extension = extensionIndex >= 0
-          ? originalName.substring(extensionIndex)
-          : '.wav';
-      final targetPath =
-          '${cacheDir.path}${Platform.pathSeparator}voice-${DateTime.now().millisecondsSinceEpoch}$extension';
-      final targetFile = File(targetPath);
-
-      if (sourceFile != null && await sourceFile.exists()) {
-        await sourceFile.copy(targetPath);
-      } else {
-        final bytes = await file.readAsBytes();
-        await targetFile.writeAsBytes(bytes, flush: true);
-      }
-
-      return targetFile.path;
-    } catch (error) {
-      if (!mounted) {
-        return null;
-      }
-      setState(() {
-        _speechMessage = _ux(
-          '음성 파일을 준비하지 못했습니다: $error',
-          '音声ファイルを準備できませんでした: $error',
-        );
-      });
-      return null;
+  HomeUserSettings _normalizeVoiceSettings(HomeUserSettings settings) {
+    if (!settings.voiceInputEnabled) {
+      return settings.copyWith(wakeWordEnabled: false);
     }
+    return settings;
   }
 
-  Future<void> _transcribeAttachedVoiceFile(String filePath) async {
-    if (_speechBusy || _isCanonicalizing || _isSubmitting) {
-      return;
+  bool get _isJapanese => _preferredLanguageCode() == 'ja';
+  String _preferredLanguageCode() {
+    return _normalizePreferredLanguage(_userSettings.preferredLanguage);
+  }
+
+  String _normalizePreferredLanguage(String value) {
+    final normalized = value.trim().toLowerCase();
+    const japaneseAliases = <String>{
+      'ja',
+      'ja-jp',
+      'jp',
+      'japanese',
+      '\u65e5\u672c\u8a9e',
+      '\uc77c\ubcf8\uc5b4',
+    };
+    const koreanAliases = <String>{
+      'ko',
+      'ko-kr',
+      'korean',
+      '\ud55c\uad6d\uc5b4',
+    };
+    if (japaneseAliases.contains(normalized) ||
+        normalized.startsWith('ja') ||
+        normalized.startsWith('jp')) {
+      return 'ja';
     }
-    setState(() {
-      _speechBusy = true;
-      _speechMessage = _ux(
-        '음성 파일을 글자로 바꾸는 중입니다.',
-        '音声ファイルを文字に変換しています。',
-      );
-    });
-    try {
-      final response = await _client.transcribeAudioFile(
-        filePath,
-        languageHint: _userSettings.preferredLanguage,
-      );
-      if (!mounted) {
-        return;
+    if (koreanAliases.contains(normalized) || normalized.startsWith('ko')) {
+      return 'ko';
+    }
+    return 'ko';
+  }
+
+  String _wakeWordProfileIdForCurrentSettings() {
+    final language = _preferredLanguageCode();
+    final phrase = _resolvedWakeWordPhraseForCurrentLanguage();
+    if (language == 'ja') {
+      switch (phrase) {
+        case 'ねえ、ナビ':
+        case 'ねえナビ':
+          return 'ja_nee_navi';
+        case 'ナビさん':
+          return 'ja_navisan';
+        default:
+          return 'ja_nee_navi';
       }
-      setState(() {
-        _controller.text = response.text;
-        _controller.selection = TextSelection.fromPosition(
-          TextPosition(offset: _controller.text.length),
-        );
-        _command = null;
-        final seconds = response.durationSeconds?.toStringAsFixed(1);
-        _speechMessage = seconds == null
-            ? _ux('음성 파일을 문장으로 바꿨습니다.', '音声ファイルを文章に変換しました。')
-            : _ux(
-                '음성 파일 전사가 끝났습니다. 길이: $seconds초',
-                '音声ファイルの文字起こしが完了しました。長さ: $seconds秒',
-              );
-      });
-      if (response.text.trim().isNotEmpty) {
-        await _interpretCommand();
-      }
-    } catch (error) {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _speechMessage = _ux(
-          '음성 파일 전사에 실패했습니다: $error',
-          '音声ファイルの文字起こしに失敗しました: $error',
-        );
-      });
-    } finally {
-      if (mounted) {
-        setState(() {
-          _speechBusy = false;
-        });
-      }
+    }
+
+    switch (phrase) {
+      case '헤이 나비':
+        return 'ko_hey_nabi';
+      case '나비야':
+      default:
+        return 'ko_nabiya';
     }
   }
 
-  bool get _isJapanese => _userSettings.preferredLanguage == '일본어';
+  String _resolvedWakeWordPhraseForCurrentLanguage() {
+    final language = _preferredLanguageCode();
+    final phrase = _userSettings.wakeWordPhrase.trim();
+    if (language == 'ja') {
+      if (phrase == 'ねえ、ナビ' || phrase == 'ナビさん') {
+        return phrase;
+      }
+      return 'ねえ、ナビ';
+    }
+    if (phrase == '헤이 나비' || phrase == '나비야') {
+      return phrase;
+    }
+    return '나비야';
+  }
+
   String _ux(String ko, String ja) => _isJapanese ? ja : ko;
-  String _localizedPreferredLanguageLabel() {
-    if (_userSettings.preferredLanguage == '일본어') {
-      return _isJapanese ? '日本語' : '일본어';
+
+  bool _isUnderstandingInProgress() =>
+      _isCanonicalizing ||
+      _status == 'Interpreting' ||
+      _phase == 'canonicalize';
+
+  bool _isExecutionInProgress() =>
+      _isSubmitting ||
+      _phase == 'queued' ||
+      _phase == 'observe' ||
+      _phase == 'plan' ||
+      _phase == 'act' ||
+      _phase == 'verify' ||
+      _phase == 'recover';
+
+  bool _isVoiceCaptureInProgress() =>
+      _speechBusy || _isListening || _isRecordingFallback;
+
+  bool _canShowWakeWordIdleMessage() =>
+      !_isUnderstandingInProgress() &&
+      !_isExecutionInProgress() &&
+      !_isVoiceCaptureInProgress();
+
+  String _voiceActionButtonLabel() {
+    if (_isUnderstandingInProgress() || _isExecutionInProgress()) {
+      return _ux('처리 중', '処理中');
     }
-    return _isJapanese ? '韓国語' : '한국어';
+    if (!_userSettings.voiceInputEnabled) {
+      return _ux('사용 안 함', '未使用');
+    }
+    if (_speechBusy) {
+      return _ux('전사 중', '変換中');
+    }
+    if (_isRecordingFallback) {
+      return _ux('녹음 종료', '録音終了');
+    }
+    if (_isListening) {
+      return _ux('듣기 종료', '音声停止');
+    }
+    return _ux('말하기 시작', '話し始める');
   }
-  String _localizedTextScaleLabel() {
-    return _userSettings.largeText
-        ? _ux('큰 글씨', '大きな文字')
-        : _ux('기본 글씨', '표준 글씨');
+
+  Future<void> _primeSpeechRecognizer() async {
+    if (!_userSettings.voiceInputEnabled || _speechAvailable || _speechBusy) {
+      return;
+    }
+    try {
+      final available = await _speechToText.initialize(
+        onStatus: _handleSpeechStatus,
+        onError: _handleSpeechError,
+        debugLogging: false,
+      );
+      _speechAvailable = available;
+      if (available && _speechLocaleId == null) {
+        final locales = await _speechToText.locales();
+        _speechLocaleId = _pickSpeechLocale(locales);
+      }
+    } catch (_) {
+      _speechAvailable = false;
+    }
   }
-  String _localizedVoiceButtonLabel() {
-    return _userSettings.voiceInputEnabled
-        ? _ux('음성 버튼 표시', '音声ボタン表示')
-        : _ux('음성 버튼 숨김', '音声ボタン非表示');
+
+  bool get _shouldAutoInterpretVoice => _userSettings.voiceAutoInterpret;
+
+  int _minimumLiveAudioBytes({required bool isFinal}) {
+    const bytesPerSecond = 16000 * 2;
+    final sensitivity = _userSettings.microphoneSensitivity.clamp(0.0, 1.0);
+    final seconds = isFinal
+        ? (0.45 - (sensitivity * 0.15)).clamp(0.25, 0.45)
+        : (1.6 - (sensitivity * 0.8)).clamp(0.8, 1.6);
+    return (bytesPerSecond * seconds).round();
   }
+
+  Future<void> _syncWakeWordMonitoring({
+    required bool previousEnabled,
+    required bool currentEnabled,
+  }) async {
+    if (!currentEnabled) {
+      if (_isWakeWordMonitoring) {
+        await _stopWakeWordMonitoring(manual: false);
+      }
+      return;
+    }
+    if (!_userSettings.voiceInputEnabled) {
+      return;
+    }
+    if (!_isWakeWordMonitoring &&
+        !_isRecordingFallback &&
+        !_isListening &&
+        !_speechBusy &&
+        (!previousEnabled || currentEnabled)) {
+      await _startWakeWordMonitoring(autoStarted: true);
+    }
+  }
+
   Future<void> _toggleVoiceInput() async {
     if (_speechBusy) {
+      return;
+    }
+    if (_isWakeWordMonitoring) {
+      await _stopWakeWordMonitoring(manual: false);
+    }
+    if (_isRecordingFallback) {
+      await _stopRecordedVoiceFallback();
+      return;
+    }
+    if (_shouldUseLocalLiveTranscription()) {
+      await _startRecordedVoiceFallback();
       return;
     }
     if (_isListening) {
@@ -849,15 +1086,7 @@ class _HomeScreenState extends State<HomeScreen> {
         );
         _speechAvailable = available;
         if (!available) {
-          if (!mounted) {
-            return;
-          }
-          setState(() {
-            _speechMessage = _ux(
-              '이 PC에서는 음성 인식을 사용할 수 없습니다.',
-              'このPCでは音声認識を利用できません。',
-            );
-          });
+          await _startRecordedVoiceFallback();
           return;
         }
       }
@@ -886,6 +1115,8 @@ class _HomeScreenState extends State<HomeScreen> {
           '聞き取っています。話し終えると文字で入力されます。',
         );
       });
+    } catch (_) {
+      await _startRecordedVoiceFallback();
     } finally {
       if (mounted) {
         setState(() {
@@ -894,6 +1125,182 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
   }
+
+  Future<void> _startRecordedVoiceFallback() async {
+    if (_isWakeWordMonitoring) {
+      await _stopWakeWordMonitoring(manual: false);
+    }
+    final hasPermission = await _audioRecorder.hasPermission();
+    if (!mounted) {
+      return;
+    }
+    if (!hasPermission) {
+      setState(() {
+        _speechMessage = _ux(
+          '마이크 권한이 없어 음성 녹음을 시작할 수 없습니다.',
+          'マイク権限がないため、音声録音を開始できません。',
+        );
+      });
+      return;
+    }
+
+    const config = RecordConfig(
+      encoder: AudioEncoder.pcm16bits,
+      sampleRate: 16000,
+      numChannels: 1,
+      bitRate: 128000,
+      streamBufferSize: 4096,
+    );
+
+    _liveAudioBytes = BytesBuilder(copy: false);
+    _liveTranscriptionText = '';
+    _liveAudioPeakLevel = 0;
+    _liveAudioSignalDetected = false;
+    _liveRecordingStartedAt = DateTime.now();
+    _lastLiveSpeechDetectedAt = null;
+    _isAutoStoppingRecordedVoice = false;
+    _liveTranscriptionGeneration += 1;
+    final generation = _liveTranscriptionGeneration;
+
+    final stream = await _audioRecorder.startStream(config);
+    await _liveAudioSubscription?.cancel();
+    _liveAudioSubscription = stream.listen((chunk) {
+      if (generation != _liveTranscriptionGeneration) {
+        return;
+      }
+      _liveAudioBytes?.add(chunk);
+      final peak = _estimatePcm16PeakLevel(chunk);
+      if (peak > _liveAudioPeakLevel) {
+        _liveAudioPeakLevel = peak;
+      }
+      if (peak >= 0.015) {
+        _liveAudioSignalDetected = true;
+        _lastLiveSpeechDetectedAt = DateTime.now();
+      }
+    });
+    _liveTranscriptionTimer?.cancel();
+    _liveTranscriptionTimer = Timer.periodic(
+      const Duration(seconds: 2),
+      (_) => unawaited(_transcribeLiveAudioBuffer(isFinal: false)),
+    );
+    _liveSilenceTimer?.cancel();
+    _liveSilenceTimer = Timer.periodic(
+      const Duration(milliseconds: 350),
+      (_) => unawaited(_maybeAutoStopRecordedVoice()),
+    );
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isRecordingFallback = true;
+      _attachedVoiceFilePath = null;
+      _speechMessage = _ux(
+        '실시간으로 듣고 있어요. 다시 누르면 녹음을 끝내고 글자로 바꿉니다.',
+        'リアルタイムで聞いています。もう一度押すと録音を終えて文字に変えます。',
+      );
+    });
+  }
+
+  Future<void> _stopRecordedVoiceFallback() async {
+    setState(() {
+      _speechBusy = true;
+    });
+    try {
+      _liveTranscriptionTimer?.cancel();
+      _liveTranscriptionTimer = null;
+      _liveSilenceTimer?.cancel();
+      _liveSilenceTimer = null;
+      await _audioRecorder.stop();
+      await _liveAudioSubscription?.cancel();
+      _liveAudioSubscription = null;
+      await _waitForLiveTranscriptionToFinish();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isRecordingFallback = false;
+      });
+      final hadSignal =
+          _liveAudioSignalDetected || _liveAudioPeakLevel >= 0.015;
+      if (!hadSignal) {
+        setState(() {
+          _speechMessage = _ux(
+            '마이크 입력이 감지되지 않았습니다. Windows 입력 장치나 블루투스 헤드셋의 마이크 연결 상태를 확인해 주세요.',
+            'マイク入力が検出されませんでした。Windows の入力デバイスや Bluetooth ヘッドセットのマイク接続状態を確認してください。',
+          );
+        });
+        if (_userSettings.wakeWordEnabled) {
+          await _startWakeWordMonitoring(autoStarted: true);
+        }
+        return;
+      }
+      final finalText = await _transcribeLiveAudioBuffer(isFinal: true);
+      if (!mounted) {
+        return;
+      }
+      final resolvedText = (finalText ?? _liveTranscriptionText).trim();
+      if (resolvedText.isEmpty) {
+        setState(() {
+          _speechMessage = _ux(
+            '녹음은 되었지만 알아들을 수 있는 음성이 충분하지 않았습니다. 마이크 위치나 입력 장치를 확인한 뒤 다시 시도해 주세요.',
+            '録音はできましたが、聞き取れる音声が十分ではありませんでした。マイク位置や入力デバイスを確認してからもう一度お試しください。',
+          );
+        });
+        if (_userSettings.wakeWordEnabled) {
+          await _startWakeWordMonitoring(autoStarted: true);
+        }
+        return;
+      }
+    } finally {
+      _liveAudioBytes = null;
+      _liveAudioPeakLevel = 0;
+      _liveAudioSignalDetected = false;
+      _liveRecordingStartedAt = null;
+      _lastLiveSpeechDetectedAt = null;
+      _isAutoStoppingRecordedVoice = false;
+      if (mounted) {
+        setState(() {
+          _speechBusy = false;
+        });
+      }
+      if (_userSettings.wakeWordEnabled &&
+          mounted &&
+          !_isWakeWordMonitoring &&
+          !_isRecordingFallback &&
+          !_speechBusy) {
+        await _startWakeWordMonitoring(autoStarted: true);
+      }
+    }
+  }
+
+  Future<void> _maybeAutoStopRecordedVoice() async {
+    if (!_isRecordingFallback || _speechBusy || _isAutoStoppingRecordedVoice) {
+      return;
+    }
+
+    final now = DateTime.now();
+    final lastSpeechDetectedAt = _lastLiveSpeechDetectedAt;
+    if (lastSpeechDetectedAt != null) {
+      if (now.difference(lastSpeechDetectedAt) <
+          const Duration(milliseconds: 2000)) {
+        return;
+      }
+    } else {
+      final recordingStartedAt = _liveRecordingStartedAt;
+      if (recordingStartedAt == null ||
+          now.difference(recordingStartedAt) < const Duration(seconds: 4)) {
+        return;
+      }
+    }
+
+    _isAutoStoppingRecordedVoice = true;
+    try {
+      await _stopRecordedVoiceFallback();
+    } finally {
+      _isAutoStoppingRecordedVoice = false;
+    }
+  }
+
   void _handleSpeechStatus(String status) {
     if (!mounted) {
       return;
@@ -909,11 +1316,16 @@ class _HomeScreenState extends State<HomeScreen> {
         _speechMessage = _ux('음성 입력이 끝났습니다.', '音声入力が終了しました。');
       }
     });
+    if (normalized.contains('notlistening') || normalized.contains('done')) {
+      _queueWakeWordRearm(const Duration(seconds: 2));
+    }
   }
+
   void _handleSpeechError(SpeechRecognitionError error) {
     if (!mounted) {
       return;
     }
+    final fallbackNeeded = _shouldFallbackToRecordedVoice(error.errorMsg);
     setState(() {
       _isListening = false;
       _speechMessage = _ux(
@@ -921,7 +1333,13 @@ class _HomeScreenState extends State<HomeScreen> {
         '音声入力に失敗しました: ${error.errorMsg}',
       );
     });
+    if (fallbackNeeded && !_isRecordingFallback && !_speechBusy) {
+      unawaited(_startRecordedVoiceFallback());
+      return;
+    }
+    _queueWakeWordRearm(const Duration(seconds: 2));
   }
+
   void _handleSpeechResult(SpeechRecognitionResult result) {
     if (!mounted) {
       return;
@@ -938,13 +1356,15 @@ class _HomeScreenState extends State<HomeScreen> {
     });
     if (result.finalResult &&
         result.recognizedWords.trim().isNotEmpty &&
+        _shouldAutoInterpretVoice &&
         !_isCanonicalizing &&
         !_isSubmitting) {
-      unawaited(_interpretCommand());
+      unawaited(_submitTextComposerRequest());
     }
   }
+
   String? _pickSpeechLocale(List<LocaleName> locales) {
-    final preferredPrefix = _isJapanese ? 'ja' : 'ko';
+    final preferredPrefix = _preferredLanguageCode();
     for (final locale in locales) {
       if (locale.localeId.toLowerCase().startsWith(preferredPrefix)) {
         return locale.localeId;
@@ -957,146 +1377,576 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     return locales.isNotEmpty ? locales.first.localeId : null;
   }
-  Future<void> _runPrimaryUserAction() async {
+
+  bool _shouldFallbackToRecordedVoice(String errorMessage) {
+    final normalized = errorMessage.toLowerCase();
+    return normalized.contains('음성인식을 사용할 수 없습니다') ||
+        normalized.contains('speech recognition not available') ||
+        normalized.contains('not available on this device') ||
+        normalized
+            .contains('this device does not support speech recognition') ||
+        normalized.contains('recognizer_unavailable') ||
+        normalized.contains('recognizer unavailable');
+  }
+
+  bool _shouldUseLocalLiveTranscription() {
+    if (!Platform.isWindows) {
+      return false;
+    }
+    return {'ko', 'ja'}.contains(_preferredLanguageCode());
+  }
+
+  Future<void> _startWakeWordLevelMonitoring() async {
+    if (_isWakeWordLevelMonitoring || _isRecordingFallback) {
+      return;
+    }
+    final hasPermission = await _wakeWordLevelRecorder.hasPermission();
+    if (!hasPermission) {
+      return;
+    }
+
+    const config = RecordConfig(
+      encoder: AudioEncoder.pcm16bits,
+      sampleRate: 16000,
+      numChannels: 1,
+      bitRate: 128000,
+      streamBufferSize: 4096,
+    );
+
+    try {
+      final stream = await _wakeWordLevelRecorder.startStream(config);
+      await _wakeWordLevelSubscription?.cancel();
+      _wakeWordAudioPeakLevel = 0;
+      _wakeWordLevelSubscription = stream.listen((chunk) {
+        final peak = _estimatePcm16PeakLevel(chunk);
+        if (peak > _wakeWordAudioPeakLevel) {
+          _wakeWordAudioPeakLevel = peak;
+        }
+        if (mounted) {
+          setState(() {});
+        }
+      });
+      if (mounted) {
+        setState(() {
+          _isWakeWordLevelMonitoring = true;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _isWakeWordLevelMonitoring = false;
+          _wakeWordAudioPeakLevel = 0;
+        });
+      }
+    }
+  }
+
+  Future<void> _stopWakeWordLevelMonitoring() async {
+    await _wakeWordLevelSubscription?.cancel();
+    _wakeWordLevelSubscription = null;
+    try {
+      await _wakeWordLevelRecorder.stop();
+    } catch (_) {
+      // Ignore stop failures for the passive level monitor.
+    }
+    if (mounted) {
+      setState(() {
+        _isWakeWordLevelMonitoring = false;
+        _wakeWordAudioPeakLevel = 0;
+      });
+    } else {
+      _isWakeWordLevelMonitoring = false;
+      _wakeWordAudioPeakLevel = 0;
+    }
+  }
+
+  Future<void> _startWakeWordMonitoring({required bool autoStarted}) async {
+    if (_isWakeWordMonitoring ||
+        _isRecordingFallback ||
+        _isListening ||
+        _speechBusy) {
+      return;
+    }
+    try {
+      final status = await _client.startWakeWord(
+        language: _preferredLanguageCode(),
+        profileId: _wakeWordProfileIdForCurrentSettings(),
+        threshold: _userSettings.wakeWordThreshold,
+      );
+      _applyWakeWordStatus(
+        status,
+        preferredMessage: autoStarted
+            ? _ux(
+                '호출어 대기 중입니다. "${_resolvedWakeWordPhraseForCurrentLanguage()}"라고 말하면 바로 듣기 시작합니다.',
+                '呼びかけ待機中です。「${_resolvedWakeWordPhraseForCurrentLanguage()}」と言うとすぐ聞き取りを始めます。',
+              )
+            : _ux(
+                '호출어 대기를 시작했습니다. "${_resolvedWakeWordPhraseForCurrentLanguage()}"라고 불러 주세요.',
+                '呼びかけ待機を始めました。「${_resolvedWakeWordPhraseForCurrentLanguage()}」と呼びかけてください。',
+              ),
+      );
+      await _startWakeWordLevelMonitoring();
+      _ensureWakeWordPolling();
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _speechMessage = _ux(
+          '호출어 대기를 시작하지 못했습니다: $error',
+          '呼びかけ待機を開始できませんでした: $error',
+        );
+      });
+    }
+  }
+
+  Future<void> _stopWakeWordMonitoring({required bool manual}) async {
+    _wakeWordStatusPollTimer?.cancel();
+    _wakeWordStatusPollTimer = null;
+    await _stopWakeWordLevelMonitoring();
+    try {
+      final status = await _client.stopWakeWord();
+      _applyWakeWordStatus(
+        status,
+        preferredMessage: manual
+            ? _ux(
+                '호출어 대기를 종료했습니다.',
+                '呼びかけ待機を終了しました。',
+              )
+            : _ux(
+                '호출어 대기를 잠시 멈췄습니다.',
+                '呼びかけ待機を一時停止しました。',
+              ),
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isWakeWordMonitoring = false;
+        _speechMessage = _ux(
+          '호출어 대기를 종료하는 중 문제가 생겼습니다: $error',
+          '呼びかけ待機の終了中に問題が発生しました: $error',
+        );
+      });
+    }
+  }
+
+  void _ensureWakeWordPolling() {
+    _wakeWordStatusPollTimer?.cancel();
+    _wakeWordStatusPollTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => unawaited(_pollWakeWordStatus()),
+    );
+    unawaited(_pollWakeWordStatus());
+  }
+
+  void _ensureAudioDiagnosticsPolling() {
+    _audioDiagnosticsPollTimer?.cancel();
+    _audioDiagnosticsPollTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => unawaited(_pollAudioDiagnostics()),
+    );
+    unawaited(_pollAudioDiagnostics());
+  }
+
+  Future<void> _pollAudioDiagnostics() async {
+    try {
+      await _client.fetchAudioDiagnostics();
+      if (!mounted) {
+        return;
+      }
+      setState(() {});
+    } catch (_) {
+      // Keep the last known diagnostics in the UI if polling fails.
+    }
+  }
+
+  Future<void> _pollWakeWordStatus() async {
+    if (!_userSettings.wakeWordEnabled && !_isWakeWordMonitoring) {
+      return;
+    }
+    try {
+      final status = await _client.fetchWakeWordStatus();
+      _applyWakeWordStatus(status);
+      if (status.pendingDetection &&
+          !_speechBusy &&
+          !_isSubmitting &&
+          !_isCanonicalizing &&
+          !_isRecordingFallback) {
+        await _client.acknowledgeWakeWord();
+        await _stopWakeWordMonitoring(manual: false);
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _speechMessage = _ux(
+            '호출어를 들었어요. 이제 말씀해 주세요.',
+            '呼びかけを聞き取りました。続けて話してください。',
+          );
+        });
+        unawaited(_showWakeWordListeningPopup());
+        await _startRecordedVoiceFallback();
+      }
+      if (!status.running) {
+        _wakeWordStatusPollTimer?.cancel();
+        _wakeWordStatusPollTimer = null;
+        _queueWakeWordRearm(const Duration(seconds: 2));
+      }
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _speechMessage = _ux(
+          '호출어 상태를 확인하지 못했습니다: $error',
+          '呼びかけ状態を確認できませんでした: $error',
+        );
+      });
+    }
+  }
+
+  void _applyWakeWordStatus(
+    WakeWordStatusResponse status, {
+    String? preferredMessage,
+  }) {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isWakeWordMonitoring = status.running;
+      if (preferredMessage != null) {
+        _speechMessage = preferredMessage;
+      } else if (status.lastError != null && status.lastError!.isNotEmpty) {
+        _speechMessage = _ux(
+          '호출어 엔진 상태: ${status.lastError}',
+          '呼びかけエンジン状態: ${status.lastError}',
+        );
+      } else if (status.running && _canShowWakeWordIdleMessage()) {
+        _speechMessage = _ux(
+          '호출어 대기 중입니다. 반응이 없으면 Windows 기본 입력 장치를 확인해 주세요.',
+          '呼びかけ待機中です。反応がない場合は Windows の既定の入力デバイスを確認してください。',
+        );
+      }
+    });
+  }
+
+  double _estimatePcm16PeakLevel(Uint8List chunk) {
+    if (chunk.length < 2) {
+      return 0;
+    }
+    final view = ByteData.sublistView(chunk);
+    var peak = 0.0;
+    for (var offset = 0; offset + 1 < chunk.length; offset += 2) {
+      final sample = view.getInt16(offset, Endian.little).abs() / 32768.0;
+      if (sample > peak) {
+        peak = sample;
+      }
+    }
+    return peak.clamp(0.0, 1.0);
+  }
+
+  Future<String?> _transcribeLiveAudioBuffer({required bool isFinal}) async {
+    final bytes = _liveAudioBytes?.toBytes() ?? Uint8List(0);
+    if (bytes.length < _minimumLiveAudioBytes(isFinal: isFinal) ||
+        _liveTranscriptionInFlight) {
+      return isFinal ? _liveTranscriptionText : null;
+    }
+
+    _liveTranscriptionInFlight = true;
+    _liveTranscriptionCompleter = Completer<void>();
+    final wavPath = await _writeLiveWavFile(bytes);
+    try {
+      final response = await _client.transcribeAudioFile(
+        wavPath,
+        languageHint: _preferredLanguageCode(),
+      );
+      if (!mounted) {
+        return response.text;
+      }
+      final trimmed = response.text.trim();
+      if (trimmed.isEmpty) {
+        return _liveTranscriptionText;
+      }
+      setState(() {
+        _liveTranscriptionText = trimmed;
+        _controller.text = trimmed;
+        _controller.selection = TextSelection.fromPosition(
+          TextPosition(offset: _controller.text.length),
+        );
+        _command = null;
+        _speechMessage = isFinal
+            ? _ux(
+                '음성 전사가 끝났습니다. 내용을 확인해 주세요.',
+                '音声の文字起こしが終わりました。内容をご確認ください。',
+              )
+            : _ux(
+                '듣는 내용을 실시간으로 글자로 바꾸는 중입니다.',
+                '聞き取った内容をリアルタイムで文字に変換しています。',
+              );
+      });
+      if (isFinal &&
+          trimmed.isNotEmpty &&
+          _shouldAutoInterpretVoice &&
+          !_isCanonicalizing &&
+          !_isSubmitting) {
+        await _submitTextComposerRequest();
+      }
+      return trimmed;
+    } catch (_) {
+      return _liveTranscriptionText;
+    } finally {
+      _liveTranscriptionInFlight = false;
+      _liveTranscriptionCompleter?.complete();
+      _liveTranscriptionCompleter = null;
+      try {
+        final tempFile = File(wavPath);
+        if (await tempFile.exists()) {
+          await tempFile.delete();
+        }
+      } catch (_) {
+        // Ignore temporary cleanup failures.
+      }
+    }
+  }
+
+  Future<void> _waitForLiveTranscriptionToFinish() async {
+    final completer = _liveTranscriptionCompleter;
+    if (completer == null) {
+      return;
+    }
+    try {
+      await completer.future.timeout(const Duration(seconds: 8));
+    } catch (_) {
+      // Keep stop flow moving even if a partial transcription stalls.
+    }
+  }
+
+  Future<String> _writeLiveWavFile(Uint8List pcmBytes) async {
+    final path =
+        '${Directory.systemTemp.path}${Platform.pathSeparator}visionnavi-live-transcribe-${DateTime.now().millisecondsSinceEpoch}.wav';
+    final wavBytes = _buildPcm16WavBytes(
+      pcmBytes,
+      sampleRate: 16000,
+      channels: 1,
+      bitsPerSample: 16,
+    );
+    await File(path).writeAsBytes(wavBytes, flush: true);
+    return path;
+  }
+
+  Uint8List _buildPcm16WavBytes(
+    Uint8List pcmBytes, {
+    required int sampleRate,
+    required int channels,
+    required int bitsPerSample,
+  }) {
+    final header = ByteData(44);
+    final byteRate = sampleRate * channels * bitsPerSample ~/ 8;
+    final blockAlign = channels * bitsPerSample ~/ 8;
+    final dataLength = pcmBytes.length;
+
+    void writeAscii(int offset, String value) {
+      for (var i = 0; i < value.length; i += 1) {
+        header.setUint8(offset + i, value.codeUnitAt(i));
+      }
+    }
+
+    writeAscii(0, 'RIFF');
+    header.setUint32(4, 36 + dataLength, Endian.little);
+    writeAscii(8, 'WAVE');
+    writeAscii(12, 'fmt ');
+    header.setUint32(16, 16, Endian.little);
+    header.setUint16(20, 1, Endian.little);
+    header.setUint16(22, channels, Endian.little);
+    header.setUint32(24, sampleRate, Endian.little);
+    header.setUint32(28, byteRate, Endian.little);
+    header.setUint16(32, blockAlign, Endian.little);
+    header.setUint16(34, bitsPerSample, Endian.little);
+    writeAscii(36, 'data');
+    header.setUint32(40, dataLength, Endian.little);
+
+    return Uint8List.fromList([...header.buffer.asUint8List(), ...pcmBytes]);
+  }
+
+  bool _hasCompletedTranscriptionMessage() {
+    final message = _speechMessage?.trim();
+    if (message == null || message.isEmpty) {
+      return false;
+    }
+    return message.contains('전사가 끝났습니다') ||
+        message.contains('내용을 확인해 주세요') ||
+        message.contains('文字起こしが終わりました') ||
+        message.contains('内容をご確認ください');
+  }
+
+  Future<void> _submitTextComposerRequest() async {
     if (_isSubmitting || _isCanonicalizing) {
       return;
     }
-    if (_command == null) {
-      await _interpretCommand();
+    final text = _controller.text.trim();
+    if (text.isEmpty) {
       return;
     }
-    if (_command?.requiresConfirmation == true) {
+
+    await _interpretCommand();
+    if (!mounted) {
+      return;
+    }
+    final command = _command;
+    if (command == null) {
+      return;
+    }
+    if (command.requiresConfirmation) {
       await _approveAndRun();
       return;
     }
     await _runReviewedCommand();
   }
-  String _userStatusTitle() {
-    if (_isSubmitting) {
-      return _ux('요청을 처리하고 있어요', 'リクエストを処理しています');
+
+  String _commandProgressMessage(String text) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) {
+      return _ux(
+        '요청 내용을 확인하고 있어요.',
+        'お願いの内容を確認しています。',
+      );
     }
-    if (_isCanonicalizing) {
+
+    if (_preferredLanguageCode() == 'ja') {
+      return _buildJapaneseProgressMessage(trimmed);
+    }
+    return _buildKoreanProgressMessage(trimmed);
+  }
+
+  String _buildKoreanProgressMessage(String text) {
+    var message = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    message = message.replaceAll(RegExp(r'[.!?]+$'), '');
+
+    final replacements = <MapEntry<RegExp, String>>[
+      MapEntry(RegExp(r'검색해줘$'), '검색해볼게요'),
+      MapEntry(RegExp(r'찾아줘$'), '찾아볼게요'),
+      MapEntry(RegExp(r'알려줘$'), '알아볼게요'),
+      MapEntry(RegExp(r'열어줘$'), '열어볼게요'),
+      MapEntry(RegExp(r'보여줘$'), '보여드릴게요'),
+      MapEntry(RegExp(r'정리해줘$'), '정리해볼게요'),
+      MapEntry(RegExp(r'요약해줘$'), '요약해볼게요'),
+      MapEntry(RegExp(r'적어줘$'), '적어볼게요'),
+      MapEntry(RegExp(r'작성해줘$'), '작성해볼게요'),
+      MapEntry(RegExp(r'실행해줘$'), '실행해볼게요'),
+      MapEntry(RegExp(r'켜줘$'), '켜볼게요'),
+      MapEntry(RegExp(r'찾아봐줘$'), '찾아볼게요'),
+      MapEntry(RegExp(r'해줘$'), '해볼게요'),
+    ];
+
+    for (final replacement in replacements) {
+      if (replacement.key.hasMatch(message)) {
+        return message.replaceFirst(replacement.key, replacement.value);
+      }
+    }
+
+    if (message.endsWith('줘')) {
+      return '${message.substring(0, message.length - 1)}볼게요';
+    }
+
+    if (message.endsWith('하기')) {
+      return '$message 도와드릴게요';
+    }
+
+    return '$message 진행해볼게요';
+  }
+
+  String _buildJapaneseProgressMessage(String text) {
+    var message = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    message = message.replaceAll(RegExp(r'[。.!?]+$'), '');
+
+    final replacements = <MapEntry<RegExp, String>>[
+      MapEntry(RegExp(r'探して$'), '探してみます。'),
+      MapEntry(RegExp(r'検索して$'), '検索してみます。'),
+      MapEntry(RegExp(r'教えて$'), '調べてご案内します。'),
+      MapEntry(RegExp(r'開いて$'), '開いてみます。'),
+      MapEntry(RegExp(r'見せて$'), '表示してみます。'),
+      MapEntry(RegExp(r'まとめて$'), 'まとめてみます。'),
+      MapEntry(RegExp(r'入力して$'), '入力してみます。'),
+    ];
+
+    for (final replacement in replacements) {
+      if (replacement.key.hasMatch(message)) {
+        return message.replaceFirst(replacement.key, replacement.value);
+      }
+    }
+
+    return '$message を進めます。';
+  }
+
+  String _heroTitle() {
+    if (_isUnderstandingInProgress()) {
       return _ux('명령을 이해하고 있어요', '命令を理解しています');
     }
+    if (_isExecutionInProgress()) {
+      return _ux('화면을 이동하고 있어요', '画面を移動しています');
+    }
+    if (_hasCompletedTranscriptionMessage()) {
+      return _ux('내용을 확인해 주세요', '内容を確認してください');
+    }
+    if (_speechBusy) {
+      return _ux('음성을 글자로 바꾸고 있어요', '音声を文字に変えています');
+    }
+    if (_isListening || _isRecordingFallback) {
+      return _ux('음성을 듣고 있어요', '音声を聞いています');
+    }
     if (_status == 'Completed') {
-      return _ux('작업이 끝났어요', '作業が完了しました');
+      return _ux('도움을 마쳤어요', 'お手伝いが完了しました');
     }
     if (_status == 'Error') {
-      return _ux('다시 확인이 필요해요', 'もう一度確認が必要です');
-    }
-    if (_command != null) {
-      return _ux('실행할 준비가 되었어요', '実行する準備ができました');
+      return _ux('다시 확인해 볼게요', 'もう一度確認します');
     }
     return _ux('무엇을 도와드릴까요?', 'どのようにお手伝いしましょうか');
   }
-  String _userStatusDetail() {
-    if (_isSubmitting) {
+
+  String _heroSubtitle() {
+    if (_isUnderstandingInProgress()) {
       return _ux(
-        '검색이나 입력 같은 작업을 차례대로 진행하고 있습니다. 잠시만 기다려 주세요.',
-        '検索や入力などの作業を順番に進めています。少しお待ちください。',
+        '요청 내용을 이해하고 있어요. 잠시만 기다려 주세요.',
+        'お願いの内容を理解しています。少々お待ちください。',
       );
     }
-    if (_isCanonicalizing) {
+    if (_isExecutionInProgress()) {
       return _ux(
-        '입력하신 문장을 이해하기 쉬운 작업 형태로 정리하고 있습니다.',
-        '入力された文章を分かりやすい作業の形に整えています。',
+        '처리가 진행될 때까지 잠시만 기다려 주세요.',
+        '処理が終わるまで少々お待ちください。',
       );
     }
-    if (_status == 'Completed') {
+    if (_speechBusy) {
       return _ux(
-        '결과를 확인하고 다시 시도하거나 다른 요청을 이어서 할 수 있습니다.',
-        '結果を確認して、再実行したり別の依頼を続けて行えます。',
+        '음성을 글자로 바꾸고 있어요. 잠시만 기다려 주세요.',
+        '音声を文字に変えています。少々お待ちください。',
       );
-    }
-    if (_status == 'Error') {
-      return _ux(
-        '인터넷 상태나 요청 문장을 다시 확인해 주세요.',
-        'インターネット状態や依頼文をもう一度確認してください。',
-      );
-    }
-    if (_command != null) {
-      return _ux('버튼을 누르면 바로 실행합니다.', 'ボタンを押すとすぐに実行します。');
     }
     return _ux(
-      '말하거나 입력하면 VisionNavi가 검색과 간단한 작업을 도와드립니다.',
-      '話すか入力すると VisionNavi が検索や簡単な作業をお手伝いします。',
+      '말하기 버튼을 누르고 말씀해 주세요.',
+      '話し始めるボタンを押して話してください。',
     );
   }
-  String? _userResultTitle() {
-    final result = _result;
-    if (result == null) {
-      return null;
-    }
-    final title = result['top_result_title']?.toString();
-    if (title != null && title.trim().isNotEmpty) {
-      return title.trim();
-    }
-    final pageTitle = result['page_title']?.toString();
-    if (pageTitle != null && pageTitle.trim().isNotEmpty) {
-      return pageTitle.trim();
-    }
-    if (result['executor'] == 'desktop') {
-      return _ux('메모 작업 결과', 'メモ作業の結果');
-    }
-    return _ux('실행 결과', '実行結果');
-  }
-  String _userResultSummary() {
-    final result = _result;
-    if (result == null) {
-      return _ux(
-        '아직 실행 결과가 없습니다. 아래 자주 하는 작업을 고르거나 문장을 직접 입력해 보세요.',
-        'まだ実行結果がありません。下のよく使う作業を選ぶか、文章を直接入力してください。',
-      );
-    }
-    final failureReason = _failureReason(result);
-    if (_isFailedResult(result) && failureReason != null) {
-      return _ux(
-        '작업 중 예상과 다르게 흘러 다시 확인이 필요합니다. 다시 시도하거나 다른 표현으로 요청해 주세요.\n\n사유: $failureReason',
-        '作業が想定どおりに進まず、再確認が必要です。もう一度試すか別の言い方で依頼してください。\n\n理由: $failureReason',
-      );
-    }
-    final summaryCandidates = [
-      result['page_summary'],
-      result['summary'],
-      result['top_result_snippet'],
-      result['observed_text'],
-      result['text'],
-    ];
-    for (final candidate in summaryCandidates) {
-      final value = candidate?.toString().trim();
-      if (value != null && value.isNotEmpty) {
-        return value;
-      }
-    }
-    if (result['executor'] == 'desktop') {
-      final filePath = result['file_path']?.toString();
-      if (filePath != null && filePath.isNotEmpty) {
-        return _ux(
-          '메모를 저장했습니다.\n저장 위치: $filePath',
-          'メモを保存しました。\n保存場所: $filePath',
-        );
-      }
-    }
-    return _ux(
-      '요청은 끝났지만 바로 보여줄 요약이 충분하지 않습니다. 다시 실행하거나 디버그 모드에서 자세한 기록을 확인할 수 있습니다.',
-      '依頼は完了しましたが、すぐに見せられる要約がまだ十分ではありません。再実行するか、デバッグモードで詳しい記録を確認できます。',
-    );
-  }
+
   String _headerSubtitle() {
     if (_debugMode) {
       return 'Interpret first, then execute.';
     }
     return _ux(
-      '말이나 글로 요청하면 차근차근 도와드려요.',
-      '音声や文字で依頼すると、順番にお手伝いします。',
+      '말로 요청하면 도와드려요',
+      '話しかけるとお手伝いします',
     );
   }
+
   String _localizedStatusLabel() {
     return _debugMode ? 'Session Status' : _ux('지금 하고 있는 일', 'いま行っていること');
   }
+
   String _localizedPolicyLabel() {
     return _debugMode ? 'Policy Mode' : _ux('도움 방식', '支援モード');
   }
+
   String _localizedPolicyValue() {
     if (_debugMode) {
       return _command?.requiresConfirmation == true
@@ -1107,16 +1957,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ? _ux('확인 후 도움', '確認してから支援')
         : _ux('자동 도움', '自動支援');
   }
-  String _userChannelBadgeValue() {
-    switch (_selectedExecutionChannel) {
-      case 'internal':
-        return _ux('안정형', '安定型');
-      case 'external':
-        return _ux('확장형', '拡張型');
-      default:
-        return _ux('자동 선택', '自動選択');
-    }
-  }
+
   String? _attachedVoiceFileName() {
     final path = _attachedVoiceFilePath;
     if (path == null || path.isEmpty) {
@@ -1130,116 +1971,14 @@ class _HomeScreenState extends State<HomeScreen> {
       return baseTheme;
     }
 
-    final darkTheme = _userSettings.darkTheme;
     final highContrast = _userSettings.highContrast;
-    final accent = highContrast ? const Color(0xFFFFB800) : AppColors.accent;
-    final shellBackground = darkTheme
-        ? const Color(0xFF0F1317)
-        : (highContrast ? Colors.black : AppColors.shellBackground);
-    final contentBackground = darkTheme
-        ? const Color(0xFF151B21)
-        : (highContrast ? const Color(0xFF0F0F0F) : AppColors.background);
-    final surface = darkTheme
-        ? const Color(0xFF1B232C)
-        : (highContrast ? Colors.black : AppColors.surface);
-    final textPrimary = darkTheme || highContrast
-        ? Colors.white
-        : AppColors.textPrimary;
-    final textMuted = darkTheme
-        ? const Color(0xFFC2CCD7)
-        : (highContrast ? const Color(0xFFE5E5E5) : AppColors.textMuted);
-    final border = darkTheme
-        ? const Color(0xFF334150)
-        : (highContrast ? Colors.white70 : AppColors.border);
-    final colorScheme = ColorScheme(
-      brightness: darkTheme ? Brightness.dark : Brightness.light,
-      primary: accent,
-      onPrimary: darkTheme ? Colors.black : Colors.white,
-      secondary: accent,
-      onSecondary: darkTheme ? Colors.black : Colors.white,
-      error: AppColors.error,
-      onError: Colors.white,
-      surface: surface,
-      onSurface: textPrimary,
+    final darkTheme = _userSettings.darkTheme && !highContrast;
+    final theme = buildAppTheme(
+      darkTheme: darkTheme,
+      highContrast: highContrast,
+      largeText: _userSettings.largeText,
     );
-
-    final textTheme = buildTextTheme(baseTheme.textTheme).apply(
-      bodyColor: textPrimary,
-      displayColor: textPrimary,
-    );
-
-    return baseTheme.copyWith(
-      scaffoldBackgroundColor: shellBackground,
-      colorScheme: colorScheme,
-      textTheme: textTheme,
-      dividerColor: border,
-      cardTheme: CardThemeData(
-        color: surface,
-        elevation: 0,
-        margin: EdgeInsets.zero,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(18),
-          side: BorderSide(color: border, width: highContrast ? 1.4 : 1.0),
-        ),
-      ),
-      inputDecorationTheme: InputDecorationTheme(
-        filled: true,
-        fillColor: contentBackground,
-        hintStyle: TextStyle(
-          color: textMuted,
-          fontSize: 13,
-        ),
-        labelStyle: TextStyle(
-          color: textMuted,
-          fontSize: 13,
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
-          borderSide: BorderSide(color: border, width: highContrast ? 1.4 : 1.0),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
-          borderSide: BorderSide(color: accent, width: highContrast ? 2.0 : 1.4),
-        ),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
-          borderSide: BorderSide(color: border, width: highContrast ? 1.4 : 1.0),
-        ),
-      ),
-      elevatedButtonTheme: ElevatedButtonThemeData(
-        style: ElevatedButton.styleFrom(
-          backgroundColor: accent,
-          foregroundColor: darkTheme ? Colors.black : Colors.white,
-          minimumSize: const Size(0, 56),
-          elevation: 0,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-        ),
-      ),
-      outlinedButtonTheme: OutlinedButtonThemeData(
-        style: OutlinedButton.styleFrom(
-          minimumSize: const Size(0, 56),
-          backgroundColor: surface,
-          side: BorderSide(color: border, width: highContrast ? 1.4 : 1.0),
-          foregroundColor: textPrimary,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-        ),
-      ),
-      extensions: <ThemeExtension<dynamic>>[
-        AppSurfaceTheme(
-          shellBackground: shellBackground,
-          contentBackground: contentBackground,
-          surface: surface,
-          textPrimary: textPrimary,
-          textMuted: textMuted,
-          border: border,
-          accent: accent,
-        ),
-      ],
-    );
+    return theme;
   }
 
   String _executionChannelSummary() {
@@ -1275,6 +2014,7 @@ class _HomeScreenState extends State<HomeScreen> {
             '内部実行方式で進めて、比較的安定した動作を優先します。',
           );
   }
+
   String? _requestedExecutionBackend() {
     final requested =
         _sessionMetadata['requested_execution_backend']?.toString();
@@ -1480,7 +2220,6 @@ class _HomeScreenState extends State<HomeScreen> {
     }
     _showSnackBar('Event Timeline 내용을 클립보드에 복사했습니다.');
   }
-
 
   Widget _buildJsonViewer(
     BuildContext context,
@@ -1783,12 +2522,14 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                             OutlinedButton.icon(
                               onPressed: _copyTraceBundle,
-                              icon: const Icon(Icons.copy_all_rounded, size: 16),
+                              icon:
+                                  const Icon(Icons.copy_all_rounded, size: 16),
                               label: const Text('Copy All'),
                             ),
                             ElevatedButton.icon(
                               onPressed: _exportTraceBundle,
-                              icon: const Icon(Icons.download_rounded, size: 16),
+                              icon:
+                                  const Icon(Icons.download_rounded, size: 16),
                               label: const Text('Export All'),
                             ),
                           ],
@@ -2021,40 +2762,14 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildAudienceModeToggle(BuildContext context) {
-    final surfaceTheme = Theme.of(context).extension<AppSurfaceTheme>()!;
-    return Container(
-      padding: const EdgeInsets.all(6),
-      decoration: BoxDecoration(
-        color: surfaceTheme.contentBackground,
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: surfaceTheme.border),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          ChoiceChip(
-            label: Text(_ux('사용자 모드', '利用者モード')),
-            selected: !_debugMode,
-            onSelected: (_) => setState(() => _debugMode = false),
-          ),
-          const SizedBox(width: 8),
-          ChoiceChip(
-            label: Text(_ux('디버그 모드', 'デバッグモード')),
-            selected: _debugMode,
-            onSelected: (_) => setState(() => _debugMode = true),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildSeniorQuickActionCard(
     BuildContext context, {
     required IconData icon,
     required String title,
     required String description,
     required String command,
+    required Color iconColor,
+    required Color iconBackground,
   }) {
     final theme = Theme.of(context);
     final surfaceTheme = theme.extension<AppSurfaceTheme>()!;
@@ -2062,7 +2777,7 @@ class _HomeScreenState extends State<HomeScreen> {
       onTap: () => _applyPresetCommand(command),
       borderRadius: BorderRadius.circular(20),
       child: Ink(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
           color: surfaceTheme.surface,
           borderRadius: BorderRadius.circular(20),
@@ -2076,26 +2791,89 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
         child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 48,
+                  height: 48,
+                  decoration: BoxDecoration(
+                    color: iconBackground,
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Icon(icon, color: iconColor, size: 26),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w800,
+                          height: 1.15,
+                          color: surfaceTheme.textPrimary,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        description,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: surfaceTheme.textMuted,
+                          height: 1.25,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSeniorSectionCard(
+    BuildContext context, {
+    required String title,
+    Widget? trailing,
+    required Widget child,
+    EdgeInsetsGeometry padding = const EdgeInsets.all(18),
+    double titleSpacing = 12,
+  }) {
+    final theme = Theme.of(context);
+    final surfaceTheme = theme.extension<AppSurfaceTheme>()!;
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: padding,
+        child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Container(
-              width: 56,
-              height: 56,
-              decoration: BoxDecoration(
-                color: AppColors.accentSoft,
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Icon(icon, color: AppColors.accent, size: 28),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    title,
+                    style: theme.textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w800,
+                      color: surfaceTheme.textPrimary,
+                    ),
+                  ),
+                ),
+                if (trailing != null) trailing,
+              ],
             ),
-            const SizedBox(height: 16),
-            Text(title, style: theme.textTheme.titleMedium),
-            const SizedBox(height: 8),
-            Text(
-              description,
-              style: theme.textTheme.bodyLarge?.copyWith(
-                color: surfaceTheme.textMuted,
-              ),
-            ),
+            SizedBox(height: titleSpacing),
+            child,
           ],
         ),
       ),
@@ -2108,432 +2886,515 @@ class _HomeScreenState extends State<HomeScreen> {
   }) {
     final theme = Theme.of(context);
     final surfaceTheme = theme.extension<AppSurfaceTheme>()!;
-    final resultTitle = _userResultTitle();
-    final resultSummary = _userResultSummary();
     final failureReason = _failureReason(_result);
     final attachedVoiceFileName = _attachedVoiceFileName();
-
-    return Container(
-      color: surfaceTheme.contentBackground,
-      padding: const EdgeInsets.all(24),
-      child: SingleChildScrollView(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _ux('무엇을 도와드릴까요?', 'どのようにお手伝いしましょうか'),
-                      style: theme.textTheme.headlineSmall,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      _ux(
-                        '복지 정보 찾기, 인터넷 검색, 메모 작성처럼 하고 싶은 일을 말하거나 입력해 주세요.',
-                        '福祉情報の検索、インターネット検索、メモ作成など、したいことを話すか入力してください。',
-                      ),
-                      style: theme.textTheme.bodyLarge?.copyWith(
-                        color: surfaceTheme.textMuted,
-                        height: 1.5,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(18),
-                      decoration: BoxDecoration(
-                        color: theme.colorScheme.primary.withValues(alpha: 0.06),
-                        borderRadius: BorderRadius.circular(18),
-                        border: Border.all(
-                          color: theme.colorScheme.primary.withValues(alpha: 0.18),
-                        ),
-                      ),
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 68,
-                            height: 68,
-                            decoration: BoxDecoration(
-                              color: theme.colorScheme.primary.withValues(alpha: 0.12),
-                              borderRadius: BorderRadius.circular(20),
-                            ),
-                            child: Icon(
-                              Icons.mic_rounded,
-                              color: theme.colorScheme.primary,
-                              size: 34,
-                            ),
-                          ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  _ux('음성으로 요청하기', '音声で依頼する'),
-                                  style: theme.textTheme.titleMedium,
-                                ),
-                                const SizedBox(height: 6),
-                                Text(
-                                  !_userSettings.voiceInputEnabled
-                                      ? _ux(
-                                          '설정에서 음성 입력 표시를 켜면 이 자리에서 말로 요청할 수 있습니다.',
-                                          '設定で音声入力表示を有効にすると、ここで音声依頼ができます。',
-                                        )
-                                      : (_speechMessage ??
-                                          _ux(
-                                            '버튼을 누르고 말씀하시면, 내용을 글자로 바꿔 입력창에 넣어드립니다.',
-                                            'ボタンを押して話すと、内容を文字に変えて入力欄に入れます。',
-                                          )),
-                                  style: theme.textTheme.bodyMedium?.copyWith(
-                                    color: surfaceTheme.textMuted,
-                                    height: 1.5,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          FilledButton.tonalIcon(
-                            onPressed: _userSettings.voiceInputEnabled
-                                ? _toggleVoiceInput
-                                : null,
-                            icon: Icon(
-                              _isListening
-                                  ? Icons.stop_circle_outlined
-                                  : Icons.graphic_eq_rounded,
-                            ),
-                            label: Text(
-                              !_userSettings.voiceInputEnabled
-                                  ? _ux('사용 안 함', '未使用')
-                                  : (_speechBusy
-                                      ? _ux('준비 중', '準備中')
-                                      : (_isListening
-                                          ? _ux('듣기 종료', '音声停止')
-                                          : _ux('말하기 시작', '話し始める'))),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          OutlinedButton.icon(
-                            onPressed: _pickVoiceFile,
-                            icon: const Icon(Icons.attach_file_rounded),
-                            label: Text(_ux('음성 파일 첨부', '音声ファイル添付')),
-                          ),
-                        ],
-                      ),
-                    ),
-                    if (attachedVoiceFileName != null) ...[
-                      const SizedBox(height: 10),
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 12,
-                        ),
-                        decoration: BoxDecoration(
-                          color: surfaceTheme.contentBackground,
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(color: surfaceTheme.border),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(Icons.audiotrack_rounded, size: 18),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                _ux(
-                                  '첨부된 음성 파일: $attachedVoiceFileName',
-                                  '添付した音声ファイル: $attachedVoiceFileName',
-                                ),
-                                style: theme.textTheme.bodyMedium,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                    const SizedBox(height: 20),
-                    TextField(
-                      controller: _controller,
-                      minLines: 4,
-                      maxLines: 6,
-                      style: theme.textTheme.titleMedium,
-                      decoration: InputDecoration(
-                        hintText: _ux(
-                          '예: 네이버에서 경기 청년 월세 지원 조건 알려줘',
-                          '例: ネイバーで京畿道の青年家賃支援条件を教えて',
-                        ),
-                        hintStyle: theme.textTheme.titleSmall?.copyWith(
-                          color: surfaceTheme.textMuted,
-                        ),
-                        contentPadding: const EdgeInsets.all(20),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Wrap(
-                      spacing: 12,
-                      runSpacing: 12,
-                      children: [
-                        ElevatedButton.icon(
-                          onPressed: (_isSubmitting || _isCanonicalizing)
-                              ? null
-                              : _runPrimaryUserAction,
-                          icon: const Icon(Icons.play_arrow_rounded),
-                          label: Text(
-                            _isSubmitting
-                                ? _ux('진행 중...', '進行中...')
-                                : _ux('바로 실행', 'すぐ実行'),
-                          ),
-                          style: ElevatedButton.styleFrom(
+    final showComposer = _showTextComposer || attachedVoiceFileName != null;
+    final examples = [
+      (
+        label: _ux('기초연금 신청 방법 알려줘', '基礎年金の申請方法を教えて'),
+        command: _ux('기초연금 신청 방법 알려줘', '基礎年金の申請方法を教えて'),
+      ),
+      (
+        label: _ux('오늘 날씨 알려줘', '今日の天気を教えて'),
+        command: _ux('오늘 날씨 알려줘', '今日の天気を教えて'),
+      ),
+      (
+        label: _ux('가까운 병원 찾아줘', '近い病院を探して'),
+        command: _ux('인천에서 가까운 병원 찾아줘', '仁川から近い病院を探して'),
+      ),
+      (
+        label: _ux('약 먹는 시간 적어줘', '薬を飲む時間を書いて'),
+        command: _ux('메모장에 약 먹는 시간 적어줘', 'メモ帳に薬を飲む時間を書いて'),
+      ),
+    ];
+    final cards = [
+      _buildSeniorQuickActionCard(
+        context,
+        icon: Icons.volunteer_activism_rounded,
+        title: _ux('복지 정보 찾기', '福祉情報を探す'),
+        description: _ux(
+          '연금과 지원금을 찾아드려요.',
+          '年金や支援金を探します。',
+        ),
+        command: _ux('기초연금 신청 방법 알려줘', '基礎年金の申請方法を教えて'),
+        iconColor: const Color(0xFFE25563),
+        iconBackground: const Color(0xFFFDEBEC),
+      ),
+      _buildSeniorQuickActionCard(
+        context,
+        icon: Icons.map_outlined,
+        title: _ux('길찾기', '道案内'),
+        description: _ux(
+          '가는 길을 안내해 드려요.',
+          '行き方を案内します。',
+        ),
+        command: _ux(
+          '네이버 지도에서 서울역에서 송내역 가는 길 찾아줘',
+          'NAVER地図でソウル駅からソンネ駅までの道を探して',
+        ),
+        iconColor: const Color(0xFF68B84C),
+        iconBackground: const Color(0xFFEAF8E4),
+      ),
+      _buildSeniorQuickActionCard(
+        context,
+        icon: Icons.note_alt_rounded,
+        title: _ux('메모 작성', 'メモ作成'),
+        description: _ux(
+          '말한 내용을 적어드려요.',
+          '話した内容を書きます。',
+        ),
+        command: _ux('메모장에 약 먹는 시간 적어줘', 'メモ帳に薬を飲む時間を書いて'),
+        iconColor: const Color(0xFFF39A2E),
+        iconBackground: const Color(0xFFFFF1E2),
+      ),
+      _buildSeniorQuickActionCard(
+        context,
+        icon: Icons.search_rounded,
+        title: _ux('인터넷 검색', 'インターネット検索'),
+        description: _ux(
+          '궁금한 내용을 찾아드려요.',
+          '気になる内容を探します。',
+        ),
+        command: _ux('오늘 날씨 알려줘', '今日の天気を教えて'),
+        iconColor: const Color(0xFF8C4DFF),
+        iconBackground: const Color(0xFFF2EBFF),
+      ),
+    ];
+    Widget buildHeroCard() {
+      final screenWidth = MediaQuery.sizeOf(context).width;
+      final compactHero = screenWidth < 760;
+      final heroHeight = showComposer ? null : (compactHero ? 300.0 : 236.0);
+      return SizedBox(
+        height: heroHeight,
+        child: SizedBox(
+          width: double.infinity,
+          child: Card(
+            margin: EdgeInsets.zero,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final isDesktopHero = constraints.maxWidth >= 760;
+                  final isNarrowHero = constraints.maxWidth < 760;
+                  final heroButtonSize = constraints.maxWidth >= 1100
+                      ? 172.0
+                      : (constraints.maxWidth >= 760 ? 136.0 : 120.0);
+                  final heroIconSize =
+                      constraints.maxWidth >= 760 ? 50.0 : 38.0;
+                  final heroButtonLabelStyle = (isNarrowHero
+                          ? theme.textTheme.titleSmall
+                          : theme.textTheme.titleMedium)
+                      ?.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w800,
+                  );
+                  final textInputButton = isNarrowHero
+                      ? OutlinedButton(
+                          onPressed: _toggleTextComposer,
+                          style: OutlinedButton.styleFrom(
                             padding: const EdgeInsets.symmetric(
-                              horizontal: 22,
-                              vertical: 18,
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                            visualDensity: VisualDensity.compact,
+                          ),
+                          child: Text(
+                            showComposer
+                                ? _ux('글자 입력 닫기', '文字入力を閉じる')
+                                : _ux('글자로 입력하기', '文字で入力する'),
+                            style: theme.textTheme.labelLarge?.copyWith(
+                              fontWeight: FontWeight.w700,
+                              color: surfaceTheme.textPrimary,
                             ),
                           ),
-                        ),
-                        OutlinedButton.icon(
-                          onPressed: (_isSubmitting || _isCanonicalizing)
-                              ? null
-                              : _interpretCommand,
-                          icon: const Icon(Icons.psychology_alt_rounded),
+                        )
+                      : OutlinedButton.icon(
+                          onPressed: _toggleTextComposer,
+                          icon: Icon(
+                            showComposer
+                                ? Icons.keyboard_hide_rounded
+                                : Icons.keyboard_alt_outlined,
+                            size: 18,
+                          ),
                           label: Text(
-                            _isCanonicalizing
-                                ? _ux('이해 중...', '理解中...')
-                                : _ux('명령 먼저 확인', '命令を先に確認'),
+                            showComposer
+                                ? _ux('글자 입력 닫기', '文字入力を閉じる')
+                                : _ux('글자로 입력하기', '文字で入力する'),
                           ),
                           style: OutlinedButton.styleFrom(
                             padding: const EdgeInsets.symmetric(
-                              horizontal: 22,
-                              vertical: 18,
+                              horizontal: 16,
+                              vertical: 10,
                             ),
+                          ),
+                        );
+                  final heroButton = SizedBox(
+                    width: heroButtonSize,
+                    height: heroButtonSize,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: const LinearGradient(
+                          begin: Alignment.topCenter,
+                          end: Alignment.bottomCenter,
+                          colors: [Color(0xFF5A8CFF), Color(0xFF2158E8)],
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: theme.colorScheme.primary
+                                .withValues(alpha: 0.22),
+                            blurRadius: 28,
+                            offset: const Offset(0, 14),
+                          ),
+                        ],
+                      ),
+                      child: Material(
+                        color: Colors.transparent,
+                        child: InkWell(
+                          customBorder: const CircleBorder(),
+                          onTap: _userSettings.voiceInputEnabled
+                              ? _toggleVoiceInput
+                              : null,
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(
+                                _isListening || _isRecordingFallback
+                                    ? Icons.stop_circle_outlined
+                                    : Icons.mic_rounded,
+                                size: heroIconSize,
+                                color: Colors.white,
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                _voiceActionButtonLabel(),
+                                style: heroButtonLabelStyle,
+                              ),
+                            ],
                           ),
                         ),
-                        if (_isSubmitting)
-                          OutlinedButton.icon(
-                            onPressed: _stopSession,
-                            icon: const Icon(Icons.stop_circle_outlined),
-                            label: Text(_ux('중지', '停止')),
-                            style: OutlinedButton.styleFrom(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 22,
-                                vertical: 18,
+                      ),
+                    ),
+                  );
+                  final heroInfo = Column(
+                    crossAxisAlignment: isDesktopHero
+                        ? CrossAxisAlignment.center
+                        : CrossAxisAlignment.center,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        _heroTitle(),
+                        textAlign: TextAlign.center,
+                        style: (isNarrowHero
+                                ? theme.textTheme.headlineSmall
+                                : theme.textTheme.headlineLarge)
+                            ?.copyWith(
+                          fontWeight: FontWeight.w800,
+                          color: surfaceTheme.textPrimary,
+                        ),
+                      ),
+                      SizedBox(height: isNarrowHero ? 6 : 10),
+                      Text(
+                        _heroSubtitle(),
+                        textAlign: TextAlign.center,
+                        style: (isNarrowHero
+                                ? theme.textTheme.bodyMedium
+                                : theme.textTheme.titleMedium)
+                            ?.copyWith(
+                          color: surfaceTheme.textMuted,
+                        ),
+                      ),
+                      if (_speechMessage != null &&
+                          (showComposer ||
+                              _isCanonicalizing ||
+                              _isSubmitting ||
+                              _speechBusy ||
+                              _hasCompletedTranscriptionMessage())) ...[
+                        const SizedBox(height: 12),
+                        Text(
+                          _speechMessage!,
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: surfaceTheme.textMuted,
+                            height: 1.35,
+                          ),
+                        ),
+                      ],
+                    ],
+                  );
+
+                  final heroActions = Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      heroButton,
+                      SizedBox(height: isNarrowHero ? 6 : 8),
+                      textInputButton,
+                    ],
+                  );
+
+                  return Column(
+                    children: [
+                      Expanded(
+                        child: isDesktopHero
+                            ? Row(
+                                crossAxisAlignment: CrossAxisAlignment.center,
+                                children: [
+                                  Expanded(flex: 3, child: heroInfo),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    flex: 2,
+                                    child: Align(
+                                      alignment: Alignment.center,
+                                      child: heroActions,
+                                    ),
+                                  ),
+                                ],
+                              )
+                            : Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  heroInfo,
+                                  const SizedBox(height: 10),
+                                  heroButton,
+                                  const SizedBox(height: 10),
+                                  textInputButton,
+                                ],
                               ),
+                      ),
+                      if (showComposer) ...[
+                        const SizedBox(height: 16),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.primary
+                                .withValues(alpha: 0.05),
+                            borderRadius: BorderRadius.circular(22),
+                            border: Border.all(
+                              color: theme.colorScheme.primary
+                                  .withValues(alpha: 0.14),
                             ),
                           ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              TextField(
+                                controller: _controller,
+                                minLines: 2,
+                                maxLines: 4,
+                                textInputAction: TextInputAction.send,
+                                onSubmitted: (_) =>
+                                    _submitTextComposerRequest(),
+                                style: theme.textTheme.titleMedium,
+                                decoration: InputDecoration(
+                                  hintText: _ux(
+                                    '어떤 도움이 필요한지 입력해보세요',
+                                    'どのようなお手伝いが必要か入力してみてください',
+                                  ),
+                                  hintStyle:
+                                      theme.textTheme.titleSmall?.copyWith(
+                                    color: surfaceTheme.textMuted,
+                                  ),
+                                  contentPadding: const EdgeInsets.all(16),
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(20),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(height: 14),
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: ElevatedButton.icon(
+                                  onPressed:
+                                      (_isSubmitting || _isCanonicalizing)
+                                          ? null
+                                          : _submitTextComposerRequest,
+                                  icon: const Icon(Icons.send_rounded),
+                                  label: Text(
+                                    _isSubmitting || _isCanonicalizing
+                                        ? _ux('처리 중', '処理中')
+                                        : _ux('요청하기', '依頼する'),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ],
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      _executionChannelSummary(),
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: surfaceTheme.textMuted,
-                        height: 1.5,
+                    ],
+                  );
+                },
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    Widget buildExamplesCard() {
+      return SizedBox(
+        height: showComposer ? null : 104,
+        child: Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: SizedBox(
+            width: double.infinity,
+            child: _buildSeniorSectionCard(
+              context,
+              title: _ux('이렇게 말해보세요', 'このように話してみてください'),
+              padding: const EdgeInsets.fromLTRB(18, 12, 18, 10),
+              titleSpacing: 8,
+              child: Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: examples
+                    .map(
+                      (example) => ActionChip(
+                        backgroundColor:
+                            Theme.of(context).chipTheme.backgroundColor,
+                        label: Text(example.label),
+                        onPressed: () => _applyPresetCommand(example.command),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                        labelStyle: theme.textTheme.bodyMedium?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          color: surfaceTheme.textPrimary,
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      _ux(
-                        '현재 설정: ${_localizedPreferredLanguageLabel()} · ${_localizedTextScaleLabel()} · ${_localizedVoiceButtonLabel()}',
-                        '現在の設定: ${_localizedPreferredLanguageLabel()} · ${_localizedTextScaleLabel()} · ${_localizedVoiceButtonLabel()}',
+                    )
+                    .toList(),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    Widget buildQuickActionsCard() {
+      final isWideLayout = MediaQuery.sizeOf(context).width >= 1100;
+      return SizedBox(
+        height: showComposer ? null : (isWideLayout ? 164 : 280),
+        child: Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: SizedBox(
+            width: double.infinity,
+            child: _buildSeniorSectionCard(
+              context,
+              title: _ux('자주 하는 작업', 'よく使う作業'),
+              padding: const EdgeInsets.fromLTRB(18, 14, 18, 14),
+              titleSpacing: 10,
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  const spacing = 12.0;
+                  final cardHeight = isWideLayout ? 96.0 : 100.0;
+
+                  if (isWideLayout) {
+                    final itemWidth =
+                        (constraints.maxWidth - (spacing * 3)) / 4;
+                    return Row(
+                      children: [
+                        for (var index = 0; index < cards.length; index++) ...[
+                          SizedBox(
+                            width: itemWidth,
+                            height: cardHeight,
+                            child: cards[index],
+                          ),
+                          if (index != cards.length - 1)
+                            const SizedBox(width: spacing),
+                        ],
+                      ],
+                    );
+                  }
+
+                  final itemWidth = (constraints.maxWidth - spacing) / 2;
+                  return Column(
+                    children: [
+                      Row(
+                        children: [
+                          SizedBox(
+                            width: itemWidth,
+                            height: cardHeight,
+                            child: cards[0],
+                          ),
+                          const SizedBox(width: spacing),
+                          SizedBox(
+                            width: itemWidth,
+                            height: cardHeight,
+                            child: cards[1],
+                          ),
+                        ],
                       ),
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: surfaceTheme.textMuted,
+                      const SizedBox(height: spacing),
+                      Row(
+                        children: [
+                          SizedBox(
+                            width: itemWidth,
+                            height: cardHeight,
+                            child: cards[2],
+                          ),
+                          const SizedBox(width: spacing),
+                          SizedBox(
+                            width: itemWidth,
+                            height: cardHeight,
+                            child: cards[3],
+                          ),
+                        ],
                       ),
-                    ),
-                  ],
+                    ],
+                  );
+                },
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    final bodyContent = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        buildHeroCard(),
+        const SizedBox(height: 12),
+        buildExamplesCard(),
+        const SizedBox(height: 12),
+        buildQuickActionsCard(),
+        if (failureReason != null && showComposer) ...[
+          const SizedBox(height: 12),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                _ux(
+                  '다시 확인이 필요한 이유: $failureReason',
+                  '再確認が必要な理由: $failureReason',
+                ),
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.error,
+                  fontWeight: FontWeight.w700,
+                  height: 1.4,
                 ),
               ),
             ),
-            const SizedBox(height: 20),
-            Text(_ux('자주 하는 작업', 'よく使う作業'), style: theme.textTheme.titleLarge),
-            const SizedBox(height: 12),
-            LayoutBuilder(
+          ),
+        ],
+      ],
+    );
+
+    return Container(
+      color: surfaceTheme.contentBackground,
+      padding: const EdgeInsets.all(16),
+      child: showComposer
+          ? SingleChildScrollView(child: bodyContent)
+          : LayoutBuilder(
               builder: (context, constraints) {
-                final isSingleColumn = constraints.maxWidth < 900;
-                final cards = [
-                  _buildSeniorQuickActionCard(
-                    context,
-                    icon: Icons.volunteer_activism_rounded,
-                    title: _ux('복지 정보 찾기', '福祉情報を探す'),
-                    description: _ux(
-                      '청년 월세 지원, 생활 지원 같은 정보를 쉽게 찾아드립니다.',
-                      '青年家賃支援や生活支援などの情報を分かりやすく探します。',
-                    ),
-                    command: '네이버에서 경기 청년 월세 지원 정보 찾아줘',
-                  ),
-                  _buildSeniorQuickActionCard(
-                    context,
-                    icon: Icons.travel_explore_rounded,
-                    title: _ux('인터넷에서 알아보기', 'インターネットで調べる'),
-                    description: _ux(
-                      '궁금한 내용을 검색하고 중요한 부분만 짧게 정리합니다.',
-                      '気になる内容を検索して大事な部分だけ短くまとめます。',
-                    ),
-                    command: '네이버에서 인천 청년 월세 지원 조건 찾아줘',
-                  ),
-                  _buildSeniorQuickActionCard(
-                    context,
-                    icon: Icons.note_alt_rounded,
-                    title: _ux('메모 작성', 'メモ作成'),
-                    description: _ux(
-                      '간단한 문장을 메모장에 적고 저장하는 일을 도와드립니다.',
-                      '簡単な文章をメモ帳に書いて保存する作業をお手伝いします。',
-                    ),
-                    command: 'Open Notepad and type exactly VisionNavi external desktop verification, then save the file.',
-                  ),
-                  _buildSeniorQuickActionCard(
-                    context,
-                    icon: Icons.folder_open_rounded,
-                    title: _ux('파일 보기', 'ファイルを見る'),
-                    description: _ux(
-                      '작업 폴더를 열고 파일을 확인하는 일을 도와드립니다.',
-                      '作業フォルダを開いてファイルを確認する作業をお手伝いします。',
-                    ),
-                    command: 'Open file explorer for the VisionNavi workspace and list files.',
-                  ),
-                ];
-                if (isSingleColumn) {
-                  return Column(
-                    children: cards
-                        .map(
-                          (card) => Padding(
-                            padding: const EdgeInsets.only(bottom: 12),
-                            child: card,
-                          ),
-                        )
-                        .toList(),
-                  );
-                }
-                return GridView.count(
-                  shrinkWrap: true,
-                  crossAxisCount: 2,
-                  mainAxisSpacing: 12,
-                  crossAxisSpacing: 12,
-                  childAspectRatio: 1.65,
-                  physics: const NeverScrollableScrollPhysics(),
-                  children: cards,
+                return SizedBox(
+                  height: constraints.maxHeight,
+                  child: bodyContent,
                 );
               },
             ),
-            const SizedBox(height: 20),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _userStatusTitle(),
-                      style: theme.textTheme.titleLarge,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      _userStatusDetail(),
-                      style: theme.textTheme.bodyLarge?.copyWith(
-                        color: surfaceTheme.textMuted,
-                        height: 1.5,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        _buildTraceBadge(context, _ux('상태', '状態'), _status),
-                        _buildTraceBadge(context, _ux('단계', '段階'), _phase),
-                        _buildTraceBadge(
-                          context,
-                          _ux('도움 방식', '支援方式'),
-                          _userChannelBadgeValue(),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      _ux('현재 안내', '現在の案内'),
-                      style: theme.textTheme.titleMedium,
-                    ),
-                    const SizedBox(height: 8),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(18),
-                      decoration: BoxDecoration(
-                        color: surfaceTheme.contentBackground,
-                        borderRadius: BorderRadius.circular(18),
-                        border: Border.all(color: surfaceTheme.border),
-                      ),
-                      child: Text(
-                        latestDetail,
-                        style: theme.textTheme.bodyLarge?.copyWith(height: 1.5),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(_ux('결과 요약', '結果要約'), style: theme.textTheme.titleLarge),
-                    const SizedBox(height: 8),
-                    Text(
-                      _ux(
-                        '디버그 정보 대신 사용자에게 바로 필요한 결과만 먼저 보여드립니다.',
-                        'デバッグ情報ではなく、利用者に必要な結果を先に表示します。',
-                      ),
-                      style: theme.textTheme.bodyLarge?.copyWith(
-                        color: surfaceTheme.textMuted,
-                        height: 1.5,
-                      ),
-                    ),
-                    if (resultTitle != null) ...[
-                      const SizedBox(height: 16),
-                      Text(resultTitle, style: theme.textTheme.titleMedium),
-                    ],
-                    const SizedBox(height: 12),
-                    SelectableText(
-                      resultSummary,
-                      style: theme.textTheme.bodyLarge?.copyWith(height: 1.6),
-                    ),
-                    if (failureReason != null) ...[
-                      const SizedBox(height: 16),
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: theme.colorScheme.errorContainer,
-                          borderRadius: BorderRadius.circular(18),
-                        ),
-                        child: Text(
-                          _ux(
-                            '다시 확인이 필요한 이유: $failureReason',
-                            '再確認が必要な理由: $failureReason',
-                          ),
-                          style: theme.textTheme.bodyLarge?.copyWith(
-                            color: theme.colorScheme.onErrorContainer,
-                            fontWeight: FontWeight.w700,
-                            height: 1.5,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 
@@ -2620,17 +3481,16 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                             DropdownButton<String>(
                               value: _selectedExecutionChannel,
-                              onChanged:
-                                  (_isSubmitting || _isCanonicalizing)
-                                      ? null
-                                      : (value) {
-                                        if (value == null) {
-                                          return;
-                                        }
-                                        setState(() {
-                                          _selectedExecutionChannel = value;
-                                        });
-                                      },
+                              onChanged: (_isSubmitting || _isCanonicalizing)
+                                  ? null
+                                  : (value) {
+                                      if (value == null) {
+                                        return;
+                                      }
+                                      setState(() {
+                                        _selectedExecutionChannel = value;
+                                      });
+                                    },
                               items: const [
                                 DropdownMenuItem(
                                   value: 'auto',
@@ -2671,10 +3531,9 @@ class _HomeScreenState extends State<HomeScreen> {
                           runSpacing: 12,
                           children: [
                             OutlinedButton(
-                              onPressed:
-                                  (_isSubmitting || _isCanonicalizing)
-                                      ? null
-                                      : _interpretCommand,
+                              onPressed: (_isSubmitting || _isCanonicalizing)
+                                  ? null
+                                  : _interpretCommand,
                               child: Text(
                                 _isCanonicalizing
                                     ? 'Interpreting...'
@@ -2682,14 +3541,13 @@ class _HomeScreenState extends State<HomeScreen> {
                               ),
                             ),
                             ElevatedButton(
-                              onPressed:
-                                  (_command == null ||
-                                          _isSubmitting ||
-                                          _isCanonicalizing)
-                                      ? null
-                                      : (_command?.requiresConfirmation == true
-                                          ? _approveAndRun
-                                          : _runReviewedCommand),
+                              onPressed: (_command == null ||
+                                      _isSubmitting ||
+                                      _isCanonicalizing)
+                                  ? null
+                                  : (_command?.requiresConfirmation == true
+                                      ? _approveAndRun
+                                      : _runReviewedCommand),
                               child: Text(
                                 _isSubmitting
                                     ? 'Running...'
@@ -2730,13 +3588,111 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Widget _buildCustomTitleBar(
+    BuildContext context, {
+    required ThemeData theme,
+    required AppSurfaceTheme surfaceTheme,
+  }) {
+    return Container(
+      height: 56,
+      decoration: BoxDecoration(
+        color: surfaceTheme.surface,
+        border: Border(bottom: BorderSide(color: surfaceTheme.border)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: GestureDetector(
+              onDoubleTap: _toggleMaximizeWindow,
+              child: DragToMoveArea(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 26,
+                        height: 26,
+                        decoration: BoxDecoration(
+                          gradient: const LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [Color(0xFF66B8FF), Color(0xFF2158E8)],
+                          ),
+                          borderRadius: BorderRadius.circular(9),
+                        ),
+                        child: const Icon(
+                          Icons.auto_awesome_rounded,
+                          size: 18,
+                          color: Colors.white,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Text(
+                        'VisionNavi',
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Flexible(
+                        child: Text(
+                          _headerSubtitle(),
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: surfaceTheme.textMuted,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: Row(
+              children: [
+                TextButton.icon(
+                  onPressed: _openSettingsDialog,
+                  icon: const Icon(Icons.settings_rounded, size: 18),
+                  label: Text(_ux('설정', '設定')),
+                ),
+                const SizedBox(width: 2),
+                TextButton.icon(
+                  onPressed: _openHelpDialog,
+                  icon: const Icon(Icons.help_outline_rounded, size: 18),
+                  label: Text(_ux('도움말', 'ヘルプ')),
+                ),
+                const SizedBox(width: 6),
+                _WindowControlButton(
+                  icon: Icons.remove_rounded,
+                  tooltip: _ux('최소화', '最小化'),
+                  onPressed: _minimizeWindow,
+                ),
+                _WindowControlButton(
+                  icon: Icons.close_rounded,
+                  tooltip: _ux('닫기', '閉じる'),
+                  onPressed: _closeWindow,
+                  isClose: true,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final baseTheme = Theme.of(context);
-    final textScale = (!_debugMode && _userSettings.largeText) ? 1.16 : 1.0;
+    final textScale = !_debugMode
+        ? (_userSettings.largeText
+            ? (_userSettings.screenScaleEnabled ? 1.22 : 1.16)
+            : (_userSettings.screenScaleEnabled ? 1.06 : 1.0))
+        : 1.0;
     final scopedTheme = _buildUserScopedTheme(baseTheme);
-    final surfaceTheme = scopedTheme.extension<AppSurfaceTheme>()!;
-    final theme = scopedTheme;
     final latestDetail =
         _events.isEmpty ? 'No execution events yet.' : _events.last.detail;
     final result = _result;
@@ -2758,109 +3714,116 @@ class _HomeScreenState extends State<HomeScreen> {
         data: MediaQuery.of(
           context,
         ).copyWith(textScaler: TextScaler.linear(textScale)),
-        child: Scaffold(
-          backgroundColor: surfaceTheme.shellBackground,
-          body: SafeArea(
-            child: Column(
-              children: [
-            Container(
-              height: 72,
-              padding: const EdgeInsets.symmetric(horizontal: 24),
-              decoration: BoxDecoration(
-                color: surfaceTheme.surface,
-                border: Border(bottom: BorderSide(color: surfaceTheme.border)),
-              ),
-              child: Row(
-                children: [
-                  Text('VisionNavi', style: theme.textTheme.titleLarge),
-                  const SizedBox(width: 12),
-                  Text(
-                    _headerSubtitle(),
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      color: surfaceTheme.textMuted,
-                    ),
+        child: CallbackShortcuts(
+          bindings: <ShortcutActivator, VoidCallback>{
+            const SingleActivator(
+              LogicalKeyboardKey.keyD,
+              control: true,
+              shift: true,
+            ): () {
+              setState(() {
+                _debugMode = !_debugMode;
+              });
+            },
+          },
+          child: Builder(
+            builder: (themedContext) {
+              final themedTheme = Theme.of(themedContext);
+              final themedSurfaceTheme =
+                  themedTheme.extension<AppSurfaceTheme>()!;
+
+              return Scaffold(
+                backgroundColor: themedSurfaceTheme.shellBackground,
+                body: SafeArea(
+                  child: Column(
+                    children: [
+                      _buildCustomTitleBar(
+                        themedContext,
+                        theme: themedTheme,
+                        surfaceTheme: themedSurfaceTheme,
+                      ),
+                      if (_debugMode)
+                        Container(
+                          height: 92,
+                          decoration: BoxDecoration(
+                            color: themedSurfaceTheme.surface,
+                            border: Border(
+                              bottom:
+                                  BorderSide(color: themedSurfaceTheme.border),
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: StatusCard(
+                                  label: _localizedStatusLabel(),
+                                  value: _status,
+                                  icon: Icons.mic_none_rounded,
+                                  iconBackground: (_isSubmitting ||
+                                          _isCanonicalizing)
+                                      ? AppColors.successSoft
+                                      : themedSurfaceTheme.contentBackground,
+                                  iconColor:
+                                      (_isSubmitting || _isCanonicalizing)
+                                          ? AppColors.success
+                                          : themedSurfaceTheme.textMuted,
+                                  showWave: true,
+                                ),
+                              ),
+                              VerticalDivider(
+                                width: 1,
+                                thickness: 1,
+                                color: themedSurfaceTheme.border,
+                              ),
+                              Expanded(
+                                child: StatusCard(
+                                  label: _localizedPolicyLabel(),
+                                  value: _localizedPolicyValue(),
+                                  icon: _command?.requiresConfirmation == true
+                                      ? Icons.lock_outline_rounded
+                                      : Icons.bolt_rounded,
+                                  iconBackground:
+                                      _command?.requiresConfirmation == true
+                                          ? AppColors.warningSoft
+                                          : themedSurfaceTheme
+                                              .contentBackground,
+                                  iconColor:
+                                      _command?.requiresConfirmation == true
+                                          ? AppColors.warning
+                                          : themedSurfaceTheme.textMuted,
+                                  showDot: true,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      Expanded(
+                        child: _debugMode
+                            ? _buildDebugModeBody(
+                                themedContext,
+                                latestDetail: latestDetail,
+                                plannedSteps: plannedSteps,
+                                executedSteps: executedSteps,
+                                planningNotes: planningNotes,
+                                directoryEntries: directoryEntries,
+                                debugTrace: debugTrace,
+                                performanceSummary: performanceSummary,
+                                executionBackend: executionBackend,
+                                canonicalizationTrace: canonicalizationTrace,
+                                plannerTrace: plannerTrace,
+                                rawAgentTrace: rawAgentTrace,
+                                normalizedAgentTrace: normalizedAgentTrace,
+                              )
+                            : _buildSeniorModeBody(
+                                themedContext,
+                                latestDetail: latestDetail,
+                              ),
+                      ),
+                    ],
                   ),
-                  const Spacer(),
-                  OutlinedButton.icon(
-                    onPressed: _openSettingsDialog,
-                    icon: const Icon(Icons.settings_rounded, size: 18),
-                    label: Text(_ux('설정', '設定')),
-                  ),
-                  const SizedBox(width: 12),
-                  _buildAudienceModeToggle(context),
-                ],
-              ),
-            ),
-            Container(
-              height: 92,
-              decoration: BoxDecoration(
-                color: surfaceTheme.surface,
-                border: Border(bottom: BorderSide(color: surfaceTheme.border)),
-              ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: StatusCard(
-                      label: _localizedStatusLabel(),
-                      value: _debugMode ? _status : _userStatusTitle(),
-                      icon: Icons.mic_none_rounded,
-                      iconBackground: (_isSubmitting || _isCanonicalizing)
-                          ? AppColors.successSoft
-                          : surfaceTheme.contentBackground,
-                      iconColor: (_isSubmitting || _isCanonicalizing)
-                          ? AppColors.success
-                          : surfaceTheme.textMuted,
-                      showWave: true,
-                    ),
-                  ),
-                  VerticalDivider(
-                    width: 1,
-                    thickness: 1,
-                    color: surfaceTheme.border,
-                  ),
-                  Expanded(
-                    child: StatusCard(
-                      label: _localizedPolicyLabel(),
-                      value: _localizedPolicyValue(),
-                      icon: _command?.requiresConfirmation == true
-                          ? Icons.lock_outline_rounded
-                          : Icons.bolt_rounded,
-                      iconBackground: _command?.requiresConfirmation == true
-                          ? AppColors.warningSoft
-                          : surfaceTheme.contentBackground,
-                      iconColor: _command?.requiresConfirmation == true
-                          ? AppColors.warning
-                          : surfaceTheme.textMuted,
-                      showDot: true,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Expanded(
-              child: _debugMode
-                  ? _buildDebugModeBody(
-                      context,
-                      latestDetail: latestDetail,
-                      plannedSteps: plannedSteps,
-                      executedSteps: executedSteps,
-                      planningNotes: planningNotes,
-                      directoryEntries: directoryEntries,
-                      debugTrace: debugTrace,
-                      performanceSummary: performanceSummary,
-                      executionBackend: executionBackend,
-                      canonicalizationTrace: canonicalizationTrace,
-                      plannerTrace: plannerTrace,
-                      rawAgentTrace: rawAgentTrace,
-                      normalizedAgentTrace: normalizedAgentTrace,
-                    )
-                  : _buildSeniorModeBody(
-                      context,
-                      latestDetail: latestDetail,
-                    ),
-            ),
-              ],
-            ),
+                ),
+              );
+            },
           ),
         ),
       ),
@@ -2868,3 +3831,58 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
+class _WindowControlButton extends StatefulWidget {
+  const _WindowControlButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+    this.isClose = false,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final Future<void> Function() onPressed;
+  final bool isClose;
+
+  @override
+  State<_WindowControlButton> createState() => _WindowControlButtonState();
+}
+
+class _WindowControlButtonState extends State<_WindowControlButton> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final surfaceTheme = theme.extension<AppSurfaceTheme>()!;
+    final background = widget.isClose
+        ? (_hovered ? const Color(0xFFE5484D) : Colors.transparent)
+        : (_hovered ? surfaceTheme.contentBackground : Colors.transparent);
+    final foreground =
+        widget.isClose && _hovered ? Colors.white : surfaceTheme.textPrimary;
+
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: Tooltip(
+        message: widget.tooltip,
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: () => widget.onPressed(),
+            borderRadius: BorderRadius.circular(12),
+            child: Container(
+              width: 44,
+              height: 36,
+              decoration: BoxDecoration(
+                color: background,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Icon(widget.icon, size: 18, color: foreground),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
