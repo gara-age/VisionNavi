@@ -1,0 +1,26 @@
+model_name: ko_nabiya_smoke
+target_phrases:
+  - "\uB098\uBE44\uC57C"
+tts_backend: voxcpm
+n_samples: 80
+n_samples_val: 16
+n_background_samples: 24
+n_background_samples_val: 8
+tts_batch_size: 8
+data_dir: "D:/VisionNaviWakeword/data"
+output_dir: "D:/VisionNaviWakeword/output"
+model:
+  model_type: conv_attention
+  model_size: small
+augmentation:
+  background_paths:
+    - "D:/VisionNaviWakeword/data/backgrounds"
+  rir_paths:
+    - "D:/VisionNaviWakeword/data/rirs"
+steps: 400
+target_fp_per_hour: 1.0
+batch_n_per_class:
+  positive: 8
+  adversarial_negative: 8
+  ACAV100M_sample: 64
+  background_noise: 8

@@ -1,0 +1,28 @@
+{
+  "profiles": [
+    {
+      "id": "ko_nabiya",
+      "language": "ko",
+      "phrase": "나비야",
+      "model_path": "runtime/wakewords/models/ko_nabiya.onnx"
+    },
+    {
+      "id": "ko_hey_nabi",
+      "language": "ko",
+      "phrase": "헤이 나비",
+      "model_path": "runtime/wakewords/models/ko_hey_nabi_dev.onnx"
+    },
+    {
+      "id": "ja_nee_navi",
+      "language": "ja",
+      "phrase": "ねえ、ナビ",
+      "model_path": "runtime/wakewords/models/ja_nee_navi_dev.onnx"
+    },
+    {
+      "id": "ja_navisan",
+      "language": "ja",
+      "phrase": "ナビさん",
+      "model_path": "runtime/wakewords/models/ja_navisan_dev.onnx"
+    }
+  ]
+}

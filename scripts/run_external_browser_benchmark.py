@@ -27,9 +27,12 @@ class BrowserBenchmarkResult:
     requested_backend: str
     effective_backend: str | None
     fallback_backend: str | None
+    outcome_class: str
     session_status: str | None
     result_status: str | None
     success: bool
+    external_only_success: bool
+    used_fallback: bool
     failure_reason: str | None
     duration_ms: float | int | None
     step_count: int | None
@@ -71,15 +74,20 @@ def _extract_result(command: str, session_id: str, snapshot: dict[str, Any]) -> 
     final_domain = validation.get("final_domain")
     failure_reason = summary.get("failure_reason") or result.get("failure_reason")
     result_status = result.get("status")
+    fallback_backend = summary.get("fallback_backend")
+    outcome_class = _classify_outcome(result_status, fallback_backend)
     return BrowserBenchmarkResult(
         command=command,
         session_id=session_id,
         requested_backend="external_browser_agent",
         effective_backend=result.get("execution_backend"),
-        fallback_backend=summary.get("fallback_backend"),
+        fallback_backend=fallback_backend,
+        outcome_class=outcome_class,
         session_status=snapshot.get("status"),
         result_status=result_status,
         success=bool(result_status == "success"),
+        external_only_success=outcome_class == "external_only_success",
+        used_fallback=bool(fallback_backend),
         failure_reason=failure_reason,
         duration_ms=summary.get("duration_ms") or result.get("duration_ms"),
         step_count=summary.get("step_count") or result.get("step_count"),
@@ -88,6 +96,83 @@ def _extract_result(command: str, session_id: str, snapshot: dict[str, Any]) -> 
         visited_domains=list(visited_domains),
         final_domain=final_domain,
     )
+
+
+def _classify_outcome(result_status: str | None, fallback_backend: str | None) -> str:
+    if str(result_status).lower() != "success":
+        return "failed"
+    if fallback_backend:
+        return "success_with_internal_fallback"
+    return "external_only_success"
+
+
+def _build_summary(results: list[BrowserBenchmarkResult]) -> dict[str, Any]:
+    if not results:
+        return {
+            "total_runs": 0,
+            "successes": 0,
+            "success_rate": 0.0,
+            "external_only_successes": 0,
+            "external_only_success_rate": 0.0,
+            "fallback_successes": 0,
+            "fallback_success_rate": 0.0,
+            "failures": 0,
+            "average_duration_ms": None,
+            "average_step_count": None,
+            "by_command": [],
+        }
+
+    success_count = sum(1 for item in results if item.success)
+    external_only_success_count = sum(1 for item in results if item.external_only_success)
+    fallback_success_count = sum(1 for item in results if item.outcome_class == "success_with_internal_fallback")
+    failure_count = sum(1 for item in results if item.outcome_class == "failed")
+    durations = [float(item.duration_ms) for item in results if item.duration_ms is not None]
+    step_counts = [item.step_count for item in results if item.step_count is not None]
+    grouped: dict[str, list[BrowserBenchmarkResult]] = {}
+    for item in results:
+        grouped.setdefault(item.command, []).append(item)
+
+    by_command = []
+    for command, items in grouped.items():
+        command_successes = sum(1 for item in items if item.success)
+        command_durations = [float(item.duration_ms) for item in items if item.duration_ms is not None]
+        by_command.append(
+            {
+                "command": command,
+                "runs": len(items),
+                "successes": command_successes,
+                "success_rate": round(command_successes / len(items), 4),
+                "external_only_successes": sum(1 for item in items if item.external_only_success),
+                "fallback_successes": sum(
+                    1 for item in items if item.outcome_class == "success_with_internal_fallback"
+                ),
+                "failures": sum(1 for item in items if item.outcome_class == "failed"),
+                "average_duration_ms": round(sum(command_durations) / len(command_durations), 2)
+                if command_durations
+                else None,
+                "failure_reasons": sorted(
+                    {
+                        item.failure_reason
+                        for item in items
+                        if item.failure_reason
+                    }
+                ),
+            }
+        )
+
+    return {
+        "total_runs": len(results),
+        "successes": success_count,
+        "success_rate": round(success_count / len(results), 4),
+        "external_only_successes": external_only_success_count,
+        "external_only_success_rate": round(external_only_success_count / len(results), 4),
+        "fallback_successes": fallback_success_count,
+        "fallback_success_rate": round(fallback_success_count / len(results), 4),
+        "failures": failure_count,
+        "average_duration_ms": round(sum(durations) / len(durations), 2) if durations else None,
+        "average_step_count": round(sum(step_counts) / len(step_counts), 2) if step_counts else None,
+        "by_command": by_command,
+    }
 
 
 def main() -> int:
@@ -136,13 +221,14 @@ def main() -> int:
         "base_url": args.base_url,
         "repeats": args.repeats,
         "commands": commands,
+        "summary": _build_summary(all_results),
         "results": [asdict(item) for item in all_results],
     }
     output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps(payload["summary"], ensure_ascii=False, indent=2))
     print(f"saved: {output_path}")
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

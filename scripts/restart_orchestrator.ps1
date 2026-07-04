@@ -11,8 +11,12 @@ $ErrorActionPreference = "Stop"
 
 Set-Location $PSScriptRoot\..
 
-if (-not (Test-Path .\.venv\Scripts\python.exe)) {
-  Write-Error "Missing .venv. Run scripts/setup_orchestrator_env.ps1 first."
+. "$PSScriptRoot\resolve_orchestrator_python.ps1"
+$projectRoot = (Get-Location).Path
+$pythonExe = Resolve-OrchestratorPython -ProjectRoot $projectRoot
+
+if (-not $pythonExe) {
+  Write-Error "Missing orchestrator environment. Run scripts/setup_orchestrator_env.ps1 first."
   exit 1
 }
 
@@ -41,12 +45,29 @@ function Stop-OrchestratorProcesses {
   param([int]$TargetPort)
 
   $listeningPids = Get-ListeningPids -TargetPort $TargetPort
-  if (-not $listeningPids -or $listeningPids.Count -eq 0) {
+  $uvicornPids = @()
+  try {
+    $uvicornPids = Get-CimInstance Win32_Process -ErrorAction Stop |
+      Where-Object {
+        $_.Name -eq 'python.exe' -and
+        $_.CommandLine -like '*-m uvicorn app.main:app*' -and
+        $_.CommandLine -like "*--port $TargetPort*"
+      } |
+      Select-Object -ExpandProperty ProcessId -Unique
+  } catch {
+    $uvicornPids = @()
+  }
+
+  $allPids = @(
+    @($listeningPids)
+    @($uvicornPids)
+  ) | Select-Object -Unique
+  if (-not $allPids -or $allPids.Count -eq 0) {
     Write-Host "No orchestrator process is listening on port $TargetPort."
     return
   }
 
-  foreach ($processId in $listeningPids) {
+  foreach ($processId in $allPids) {
     try {
       $process = Get-Process -Id $processId -ErrorAction Stop
       Write-Host "Stopping PID $processId ($($process.ProcessName)) on port $TargetPort..."
@@ -107,11 +128,11 @@ function Set-OrchestratorEnvironment {
     $env:EXTERNAL_DESKTOP_AGENT_MAX_LOOPS = "10"
     $env:EXTERNAL_DESKTOP_AGENT_TIMEOUT_S = "180"
     $env:MODEL_API_TIMEOUT_S = "120"
-    $env:PLAYWRIGHT_HEADLESS = "false"
-    $env:PLAYWRIGHT_USE_CDP = "true"
-    $env:PLAYWRIGHT_CDP_URL = "http://127.0.0.1:9222"
-    $env:ITERATIVE_BROWSER_LOOP_ENABLED = "true"
-    $env:ITERATIVE_BROWSER_MAX_STEPS = "12"
+  $env:PLAYWRIGHT_HEADLESS = "false"
+  $env:PLAYWRIGHT_USE_CDP = "true"
+  $env:PLAYWRIGHT_CDP_URL = "http://127.0.0.1:9222"
+  $env:ITERATIVE_BROWSER_LOOP_ENABLED = "true"
+  $env:ITERATIVE_BROWSER_MAX_STEPS = "12"
   }
 
   $env:AUDIO_TRANSCRIPTION_MODEL = "medium"
@@ -119,12 +140,16 @@ function Set-OrchestratorEnvironment {
   $env:AUDIO_TRANSCRIPTION_COMPUTE_TYPE = "int8"
   $env:AUDIO_TRANSCRIPTION_BEAM_SIZE = "8"
   $env:AUDIO_TRANSCRIPTION_VAD_FILTER = "true"
+  $env:WAKEWORD_BACKEND = "livekit-wakeword"
+  $env:WAKEWORD_MANIFEST_PATH = "runtime/wakewords/manifest.json"
+  $env:WAKEWORD_THRESHOLD = "0.5"
+  $env:WAKEWORD_DEBOUNCE_SECONDS = "2.0"
+  $env:PYTHONUTF8 = "1"
 }
 
 Stop-OrchestratorProcesses -TargetPort $Port
 Set-OrchestratorEnvironment -SelectedMode $Mode
 
-$pythonExe = (Resolve-Path .\.venv\Scripts\python.exe).Path
 $uvicornArgs = @("-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "$Port", "--app-dir", "orchestrator")
 if ($Mode -eq "dev") {
   $uvicornArgs += "--reload"

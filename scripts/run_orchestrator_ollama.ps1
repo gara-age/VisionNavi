@@ -1,7 +1,12 @@
 Set-Location $PSScriptRoot\..
 
-if (-not (Test-Path .\.venv\Scripts\python.exe)) {
-  Write-Error "Missing .venv. Run scripts/setup_orchestrator_env.ps1 first."
+. "$PSScriptRoot\resolve_orchestrator_python.ps1"
+
+$projectRoot = (Get-Location).Path
+$pythonExe = Resolve-OrchestratorPython -ProjectRoot $projectRoot
+
+if (-not $pythonExe) {
+  Write-Error "Missing orchestrator environment. Run scripts/setup_orchestrator_env.ps1 first."
   exit 1
 }
 
@@ -30,5 +35,10 @@ $env:PLAYWRIGHT_USE_CDP = "true"
 $env:PLAYWRIGHT_CDP_URL = "http://127.0.0.1:9222"
 $env:ITERATIVE_BROWSER_LOOP_ENABLED = "true"
 $env:ITERATIVE_BROWSER_MAX_STEPS = "12"
+$env:WAKEWORD_BACKEND = "livekit-wakeword"
+$env:WAKEWORD_MANIFEST_PATH = "runtime/wakewords/manifest.json"
+$env:WAKEWORD_THRESHOLD = "0.5"
+$env:WAKEWORD_DEBOUNCE_SECONDS = "2.0"
+$env:PYTHONUTF8 = "1"
 
-.\.venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8010 --app-dir orchestrator
+& $pythonExe -m uvicorn app.main:app --host 127.0.0.1 --port 8010 --app-dir orchestrator

@@ -1,0 +1,17 @@
+model_name: ko_nabiya
+target_phrases:
+  - "\uB098\uBE44\uC57C"
+tts_backend: voxcpm
+n_samples: 5000
+data_dir: "D:/VisionNaviWakeword/data"
+output_dir: "D:/VisionNaviWakeword/output"
+model:
+  model_type: conv_attention
+  model_size: small
+augmentation:
+  background_paths:
+    - "D:/VisionNaviWakeword/data/backgrounds"
+  rir_paths:
+    - "D:/VisionNaviWakeword/data/rirs"
+steps: 30000
+target_fp_per_hour: 0.2

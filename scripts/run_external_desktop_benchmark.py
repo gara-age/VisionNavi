@@ -25,17 +25,22 @@ class DesktopBenchmarkResult:
     requested_backend: str
     effective_backend: str | None
     fallback_backend: str | None
+    outcome_class: str
     session_status: str | None
     result_status: str | None
     success: bool
+    external_only_success: bool
+    used_fallback: bool
     failure_reason: str | None
     duration_ms: float | int | None
     step_count: int | None
     attempt_count: int | None
     expected_text: str | None
     observed_text: str | None
-    exact_match: bool | None
-    contains_expected_text: bool | None
+    final_exact_match: bool | None
+    final_contains_expected_text: bool | None
+    external_exact_match: bool | None
+    external_contains_expected_text: bool | None
     file_path: str | None
 
 
@@ -64,29 +69,137 @@ def _poll_session(
 def _extract_result(command: str, session_id: str, snapshot: dict[str, Any]) -> DesktopBenchmarkResult:
     result = snapshot.get("result") or {}
     summary = result.get("execution_summary") or {}
-    validation = (result.get("raw_agent_trace") or {}).get("validation") or result.get("validation") or {}
     expected_text = result.get("text")
     observed_text = result.get("observed_text")
     result_status = result.get("status")
+    fallback_backend = summary.get("fallback_backend")
+    outcome_class = _classify_outcome(result_status, fallback_backend)
+    external_result = result.get("external_backend_result") if isinstance(result.get("external_backend_result"), dict) else None
+    external_validation = (
+        (external_result or {}).get("validation")
+        or (result.get("raw_agent_trace") or {}).get("validation")
+        or result.get("validation")
+        or {}
+    )
+    final_validation = _compute_text_validation(expected_text, observed_text)
     return DesktopBenchmarkResult(
         command=command,
         session_id=session_id,
         requested_backend="external_desktop_agent",
         effective_backend=result.get("execution_backend"),
-        fallback_backend=summary.get("fallback_backend"),
+        fallback_backend=fallback_backend,
+        outcome_class=outcome_class,
         session_status=snapshot.get("status"),
         result_status=result_status,
         success=bool(result_status == "success"),
+        external_only_success=outcome_class == "external_only_success",
+        used_fallback=bool(fallback_backend),
         failure_reason=summary.get("failure_reason") or result.get("failure_reason"),
         duration_ms=summary.get("duration_ms") or result.get("duration_ms"),
         step_count=summary.get("step_count") or result.get("step_count"),
         attempt_count=result.get("attempt_count"),
         expected_text=expected_text,
         observed_text=observed_text,
-        exact_match=validation.get("exact_match"),
-        contains_expected_text=validation.get("contains_expected_text"),
+        final_exact_match=final_validation["exact_match"],
+        final_contains_expected_text=final_validation["contains_expected_text"],
+        external_exact_match=external_validation.get("exact_match"),
+        external_contains_expected_text=external_validation.get("contains_expected_text"),
         file_path=result.get("file_path"),
     )
+
+
+def _classify_outcome(result_status: str | None, fallback_backend: str | None) -> str:
+    if str(result_status).lower() != "success":
+        return "failed"
+    if fallback_backend:
+        return "success_with_internal_fallback"
+    return "external_only_success"
+
+
+def _normalize_text(value: str | None) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _compute_text_validation(expected_text: str | None, observed_text: str | None) -> dict[str, bool]:
+    normalized_expected = _normalize_text(expected_text)
+    normalized_observed = _normalize_text(observed_text)
+    return {
+        "exact_match": normalized_observed == normalized_expected,
+        "contains_expected_text": bool(normalized_expected and normalized_expected in normalized_observed),
+    }
+
+
+def _build_summary(results: list[DesktopBenchmarkResult]) -> dict[str, Any]:
+    if not results:
+        return {
+            "total_runs": 0,
+            "successes": 0,
+            "success_rate": 0.0,
+            "external_only_successes": 0,
+            "external_only_success_rate": 0.0,
+            "fallback_successes": 0,
+            "fallback_success_rate": 0.0,
+            "failures": 0,
+            "average_duration_ms": None,
+            "average_step_count": None,
+            "by_command": [],
+        }
+
+    success_count = sum(1 for item in results if item.success)
+    external_only_success_count = sum(1 for item in results if item.external_only_success)
+    fallback_success_count = sum(1 for item in results if item.outcome_class == "success_with_internal_fallback")
+    failure_count = sum(1 for item in results if item.outcome_class == "failed")
+    durations = [float(item.duration_ms) for item in results if item.duration_ms is not None]
+    step_counts = [item.step_count for item in results if item.step_count is not None]
+    grouped: dict[str, list[DesktopBenchmarkResult]] = {}
+    for item in results:
+        grouped.setdefault(item.command, []).append(item)
+
+    by_command = []
+    for command, items in grouped.items():
+        command_successes = sum(1 for item in items if item.success)
+        command_durations = [float(item.duration_ms) for item in items if item.duration_ms is not None]
+        by_command.append(
+            {
+                "command": command,
+                "runs": len(items),
+                "successes": command_successes,
+                "success_rate": round(command_successes / len(items), 4),
+                "external_only_successes": sum(1 for item in items if item.external_only_success),
+                "fallback_successes": sum(
+                    1 for item in items if item.outcome_class == "success_with_internal_fallback"
+                ),
+                "failures": sum(1 for item in items if item.outcome_class == "failed"),
+                "average_duration_ms": round(sum(command_durations) / len(command_durations), 2)
+                if command_durations
+                else None,
+                "failure_reasons": sorted(
+                    {
+                        item.failure_reason
+                        for item in items
+                        if item.failure_reason
+                    }
+                ),
+                "final_exact_matches": sum(1 for item in items if item.final_exact_match is True),
+                "external_exact_matches": sum(1 for item in items if item.external_exact_match is True),
+            }
+        )
+
+    return {
+        "total_runs": len(results),
+        "successes": success_count,
+        "success_rate": round(success_count / len(results), 4),
+        "external_only_successes": external_only_success_count,
+        "external_only_success_rate": round(external_only_success_count / len(results), 4),
+        "fallback_successes": fallback_success_count,
+        "fallback_success_rate": round(fallback_success_count / len(results), 4),
+        "failures": failure_count,
+        "average_duration_ms": round(sum(durations) / len(durations), 2) if durations else None,
+        "average_step_count": round(sum(step_counts) / len(step_counts), 2) if step_counts else None,
+        "by_command": by_command,
+    }
 
 
 def main() -> int:
@@ -135,9 +248,11 @@ def main() -> int:
         "base_url": args.base_url,
         "repeats": args.repeats,
         "commands": commands,
+        "summary": _build_summary(all_results),
         "results": [asdict(item) for item in all_results],
     }
     output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps(payload["summary"], ensure_ascii=False, indent=2))
     print(f"saved: {output_path}")
     return 0
 
