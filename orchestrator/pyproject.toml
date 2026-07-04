@@ -13,6 +13,7 @@ dependencies = [
   "pywin32>=306",
   "browser-use[core]>=0.13,<0.14",
   "faster-whisper>=1.1,<2.0",
+  "livekit-wakeword[listener]",
 ]
 
 [project.optional-dependencies]

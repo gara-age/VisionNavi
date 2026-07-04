@@ -51,6 +51,10 @@ class Settings:
     audio_transcription_compute_type: str = "int8"
     audio_transcription_beam_size: int = 8
     audio_transcription_vad_filter: bool = True
+    wakeword_backend: str = "livekit-wakeword"
+    wakeword_manifest_path: str = "runtime/wakewords/manifest.json"
+    wakeword_threshold: float = 0.5
+    wakeword_debounce_seconds: float = 2.0
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -100,4 +104,8 @@ class Settings:
             audio_transcription_compute_type=os.getenv("AUDIO_TRANSCRIPTION_COMPUTE_TYPE", "int8"),
             audio_transcription_beam_size=int(os.getenv("AUDIO_TRANSCRIPTION_BEAM_SIZE", "8")),
             audio_transcription_vad_filter=os.getenv("AUDIO_TRANSCRIPTION_VAD_FILTER", "true").lower() == "true",
+            wakeword_backend=os.getenv("WAKEWORD_BACKEND", "livekit-wakeword"),
+            wakeword_manifest_path=os.getenv("WAKEWORD_MANIFEST_PATH", "runtime/wakewords/manifest.json"),
+            wakeword_threshold=float(os.getenv("WAKEWORD_THRESHOLD", "0.5")),
+            wakeword_debounce_seconds=float(os.getenv("WAKEWORD_DEBOUNCE_SECONDS", "2.0")),
         )

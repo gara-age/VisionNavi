@@ -35,3 +35,10 @@ def test_should_not_fallback_when_cpu_was_requested() -> None:
     )
 
     assert should_fallback is False
+
+
+def test_normalize_language_hint_accepts_language_codes_and_labels() -> None:
+    assert AudioTranscriptionService._normalize_language_hint("ko") == "ko"  # noqa: SLF001
+    assert AudioTranscriptionService._normalize_language_hint("한국어") == "ko"  # noqa: SLF001
+    assert AudioTranscriptionService._normalize_language_hint("Japanese") == "ja"  # noqa: SLF001
+    assert AudioTranscriptionService._normalize_language_hint("日本語") == "ja"  # noqa: SLF001

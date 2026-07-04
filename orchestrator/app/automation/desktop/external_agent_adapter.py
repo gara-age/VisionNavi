@@ -321,13 +321,17 @@ class ExternalDesktopAgentAdapter:
         bridge_status = str(bridge_result.get("status") or "failed").lower()
         bridge_reason = str(bridge_result.get("reason") or "").strip().lower()
         bridge_error = str(bridge_result.get("error") or "").strip().lower()
-        exact_match = observed_text == expected_text
-        contains_expected = bool(expected_text and expected_text in observed_text)
+        normalized_expected = self._normalize_text_for_verification(expected_text)
+        normalized_observed = self._normalize_text_for_verification(observed_text)
+        exact_match = normalized_observed == normalized_expected
+        contains_expected = bool(normalized_expected and normalized_expected in normalized_observed)
         observed_non_empty = bool(observed_text.strip())
 
         validation = {
             "expected_length": len(expected_text),
             "observed_length": len(observed_text),
+            "normalized_expected_length": len(normalized_expected),
+            "normalized_observed_length": len(normalized_observed),
             "exact_match": exact_match,
             "contains_expected_text": contains_expected,
             "observed_non_empty": observed_non_empty,
@@ -370,6 +374,9 @@ class ExternalDesktopAgentAdapter:
             "duration_ms": duration_ms,
             "validation": validation,
         }
+
+    def _normalize_text_for_verification(self, value: str) -> str:
+        return value.replace("\r\n", "\n").replace("\r", "\n").strip()
 
     def _should_retry_attempt(self, attempt: dict[str, object]) -> bool:
         failure_reason = str(attempt.get("failure_reason") or "")

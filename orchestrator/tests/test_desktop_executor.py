@@ -195,3 +195,28 @@ def test_execute_workspace_inspection_returns_directory_entries(tmp_path: Path, 
     assert result["status"] == "success"
     assert result["folder_path"] == str(workspace_root)
     assert len(result["directory_entries"]) == 2
+
+
+def test_open_explorer_step_uses_verified_open_helper(tmp_path: Path, monkeypatch) -> None:
+    executor = DesktopExecutor()
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    monkeypatch.setattr(executor, "_workspace_root", lambda: workspace_root)
+
+    captured: dict[str, object] = {}
+
+    def fake_open(folder_path: Path) -> int | None:
+        captured["folder_path"] = str(folder_path)
+        return 3210
+
+    monkeypatch.setattr(executor, "_open_directory_in_explorer", fake_open)
+
+    context: dict[str, object] = {}
+    result = executor.execute_action_step(
+        ActionStep(action="open_explorer", target="workspace"),
+        context,
+    )
+
+    assert result["status"] == "success"
+    assert captured["folder_path"] == str(workspace_root)
+    assert context["explorer_process_id"] == 3210

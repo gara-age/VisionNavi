@@ -152,8 +152,24 @@ class AudioTranscriptionService:
         value = language_hint.strip().lower()
         if not value or value == "auto":
             return None
-        if value in {"한국어", "ko-kr", "ko"}:
+
+        korean_aliases = {
+            "ko",
+            "ko-kr",
+            "korean",
+            "\ud55c\uad6d\uc5b4",
+        }
+        japanese_aliases = {
+            "ja",
+            "ja-jp",
+            "jp",
+            "japanese",
+            "\u65e5\u672c\u8a9e",
+            "\uc77c\ubcf8\uc5b4",
+        }
+
+        if value in korean_aliases or value.startswith("ko"):
             return "ko"
-        if value in {"일본어", "ja-jp", "ja", "jp"}:
+        if value in japanese_aliases or value.startswith("ja") or value.startswith("jp"):
             return "ja"
         return value

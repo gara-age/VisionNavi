@@ -10,13 +10,17 @@ from app.models.canonical_command import CanonicalCommand
 from app.models.model_api import CanonicalCommandPredictionRequest
 from app.models.model_api import PopupSummaryRequest, PopupSummaryResponse
 from app.models.requests import (
+    AudioDiagnosticsResponse,
     AudioTranscriptionRequest,
     AudioTranscriptionResponse,
     CommandRequest,
     PopupSummaryHttpRequest,
     RunCommandRequest,
+    WakeWordStartRequest,
+    WakeWordStatusResponse,
 )
 from app.models.session import RunCommandResponse, SessionSnapshot
+from app.services.audio_diagnostics_service import AudioDiagnosticsService
 from app.services.audio_transcription_service import AudioTranscriptionService
 from app.services.command_normalizer import CommandNormalizer
 from app.services.intent_router import IntentRouter
@@ -24,6 +28,7 @@ from app.services.map_route_parser import detect_map_provider
 from app.services.model_client import RemoteModelClient
 from app.services.safety_classifier import SafetyClassifier
 from app.services.session_store import SessionStore
+from app.services.wakeword_service import WakeWordService
 
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 
@@ -35,6 +40,8 @@ model_client = RemoteModelClient(settings)
 agent_loop = AgentLoop()
 session_store = SessionStore()
 audio_transcription_service = AudioTranscriptionService(settings)
+wakeword_service = WakeWordService(settings)
+audio_diagnostics_service = AudioDiagnosticsService()
 
 
 def build_canonical_command(request: CommandRequest) -> CanonicalCommand:
@@ -390,6 +397,56 @@ def transcribe_audio(request: AudioTranscriptionRequest) -> AudioTranscriptionRe
         raise HTTPException(status_code=422, detail="Audio transcription produced no text")
 
     return AudioTranscriptionResponse(**payload)
+
+
+@router.get("/wakeword/status", response_model=WakeWordStatusResponse)
+def get_wakeword_status() -> WakeWordStatusResponse:
+    return WakeWordStatusResponse(**wakeword_service.status())
+
+
+@router.get("/audio-diagnostics", response_model=AudioDiagnosticsResponse)
+def get_audio_diagnostics() -> AudioDiagnosticsResponse:
+    try:
+        payload = audio_diagnostics_service.collect()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Audio diagnostics failed: {type(exc).__name__}: {exc}",
+        ) from exc
+    return AudioDiagnosticsResponse(**payload)
+
+
+@router.post("/wakeword/start", response_model=WakeWordStatusResponse)
+async def start_wakeword_monitoring(
+    request: WakeWordStartRequest,
+) -> WakeWordStatusResponse:
+    try:
+        payload = await wakeword_service.start_monitoring(
+            language=request.language,
+            phrase=request.phrase,
+            profile_id=request.profile_id,
+            threshold=request.threshold,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Wakeword start failed: {exc}") from exc
+    return WakeWordStatusResponse(**payload)
+
+
+@router.post("/wakeword/stop", response_model=WakeWordStatusResponse)
+async def stop_wakeword_monitoring() -> WakeWordStatusResponse:
+    payload = await wakeword_service.stop_monitoring()
+    return WakeWordStatusResponse(**payload)
+
+
+@router.post("/wakeword/acknowledge", response_model=WakeWordStatusResponse)
+def acknowledge_wakeword_detection() -> WakeWordStatusResponse:
+    return WakeWordStatusResponse(**wakeword_service.acknowledge_detection())
 
 
 @router.post("/popup-summary", response_model=PopupSummaryResponse)

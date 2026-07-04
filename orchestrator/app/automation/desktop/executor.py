@@ -183,13 +183,12 @@ class DesktopExecutor:
 
         if step.action == "open_explorer":
             try:
-                folder_hint = step.path_hint or step.target or str(self._workspace_root())
-                folder_path = self._build_workspace_path(folder_hint, expect_directory=True)
+                folder_path = self._resolve_workspace_directory_hint(step.path_hint or step.target)
                 folder_path.mkdir(parents=True, exist_ok=True)
-                process = subprocess.Popen(["explorer.exe", str(folder_path)])
+                process_id = self._open_directory_in_explorer(folder_path)
                 context["folder_path"] = str(folder_path)
-                context["explorer_process_id"] = process.pid
-                return {"status": "success", "folder_path": str(folder_path), "process_id": process.pid}
+                context["explorer_process_id"] = process_id
+                return {"status": "success", "folder_path": str(folder_path), "process_id": process_id}
             except Exception as exc:
                 return {"status": "failed", "reason": f"desktop_error:{type(exc).__name__}", "detail": str(exc)}
 
@@ -470,13 +469,19 @@ class DesktopExecutor:
     def _resolve_directory_path(self, step: ActionStep, context: dict[str, object]) -> Path:
         folder_hint = step.path_hint or step.target
         if isinstance(folder_hint, str) and folder_hint:
-            folder_path = self._build_workspace_path(folder_hint, expect_directory=True)
+            folder_path = self._resolve_workspace_directory_hint(folder_hint)
         elif isinstance(context.get("folder_path"), str):
             folder_path = Path(str(context["folder_path"]))
         else:
             folder_path = self._workspace_root()
         folder_path.mkdir(parents=True, exist_ok=True)
         return folder_path
+
+    def _resolve_workspace_directory_hint(self, folder_hint: str | None) -> Path:
+        normalized_hint = (folder_hint or "").strip().lower()
+        if normalized_hint in {"", "workspace", "visionnavi workspace"}:
+            return self._workspace_root()
+        return self._build_workspace_path(folder_hint or "visionnavi-item", expect_directory=True)
 
     def _extract_notepad_text(self, raw_text: str) -> str:
         patterns = [
@@ -605,6 +610,41 @@ class DesktopExecutor:
             time.sleep(0.2)
 
         return observed_text
+
+    def _open_directory_in_explorer(self, folder_path: Path) -> int | None:
+        existing_handles = self._explorer_window_handles()
+        command = ["explorer.exe", "/n,", str(folder_path)]
+        process = subprocess.Popen(command)
+        opened_handle = self._wait_for_new_explorer_window(existing_handles)
+        if opened_handle is None:
+            raise RuntimeError("explorer_window_not_detected")
+        return process.pid
+
+    def _explorer_window_handles(self) -> set[int]:
+        try:
+            from pywinauto import Desktop
+
+            handles: set[int] = set()
+            for window in Desktop(backend="win32").windows():
+                try:
+                    class_name = window.class_name()
+                except Exception:
+                    continue
+                if class_name in {"CabinetWClass", "ExploreWClass"}:
+                    handles.add(int(window.handle))
+            return handles
+        except Exception:
+            return set()
+
+    def _wait_for_new_explorer_window(self, existing_handles: set[int], timeout_s: float = 4.0) -> int | None:
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            current_handles = self._explorer_window_handles()
+            new_handles = current_handles - existing_handles
+            if new_handles:
+                return next(iter(new_handles))
+            time.sleep(0.2)
+        return None
 
     def _get_clipboard_text(self) -> str | None:
         import win32clipboard

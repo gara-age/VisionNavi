@@ -57,6 +57,20 @@ def test_classify_attempt_marks_timeout() -> None:
     assert result["failure_reason"] == "external_desktop_agent_timeout"
 
 
+def test_classify_attempt_normalizes_line_endings_and_outer_whitespace() -> None:
+    adapter = _build_adapter()
+
+    result = adapter._classify_attempt(  # noqa: SLF001
+        bridge_result={"status": "success", "durationMs": 900},
+        expected_text="VisionNavi external desktop verification\r\nline two",
+        observed_text="  VisionNavi external desktop verification\nline two  ",
+    )
+
+    assert result["result_status"] == "success"
+    assert result["validation"]["exact_match"] is True
+    assert result["validation"]["contains_expected_text"] is True
+
+
 def test_should_retry_attempt_only_for_empty_timeout_like_failures() -> None:
     adapter = _build_adapter()
 
