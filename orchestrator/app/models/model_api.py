@@ -10,6 +10,7 @@ class CanonicalCommandPredictionRequest(BaseModel):
     input_mode: Literal["voice", "text"]
     raw_text: str = Field(min_length=1)
     normalized_text: str = Field(min_length=1)
+    preferred_language: Literal["ko", "ja", "en", "unknown"] | None = None
 
 
 class CanonicalCommandPredictionResponse(BaseModel):

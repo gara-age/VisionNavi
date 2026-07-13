@@ -26,6 +26,88 @@ class RemoteModelClient:
             return True
         return bool(self.settings.model_api_url)
 
+    def _resolve_language(self, *values: str | None) -> str:
+        import re
+
+        for value in values:
+            if not value:
+                continue
+            normalized = value.strip().lower()
+            if normalized in {"ko", "ko-kr", "korean"}:
+                return "ko"
+            if normalized in {"ja", "ja-jp", "jp", "japanese"}:
+                return "ja"
+            if normalized in {"en", "en-us", "english"}:
+                return "en"
+            if re.search(r"[\u3040-\u30ff]", value):
+                return "ja"
+            if re.search(r"[\uac00-\ud7a3]", value):
+                return "ko"
+            if re.search(r"[A-Za-z]", value):
+                return "en"
+        return "unknown"
+
+    def _select_general_model(self, language: str) -> str:
+        if language == "ja" and self.settings.ollama_model_ja:
+            return self.settings.ollama_model_ja
+        if language == "ko" and self.settings.ollama_model_ko:
+            return self.settings.ollama_model_ko
+        return self.settings.ollama_model
+
+    def _select_planner_model(self, language: str) -> str:
+        if language == "ja" and self.settings.ollama_planner_model_ja:
+            return self.settings.ollama_planner_model_ja
+        if language == "ko" and self.settings.ollama_planner_model_ko:
+            return self.settings.ollama_planner_model_ko
+        return self.settings.ollama_planner_model
+
+    def _post_ollama_json_request(
+        self,
+        *,
+        model: str,
+        prompt: str,
+        options: dict[str, object],
+        format: str = "json",
+        images: list[str] | None = None,
+        fallback_model: str | None = None,
+    ) -> dict[str, object]:
+        import httpx
+
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+            "format": format,
+            "options": options,
+        }
+        if images:
+            payload["images"] = images
+
+        with httpx.Client(timeout=self.settings.model_api_timeout_s) as client:
+            try:
+                response = client.post(
+                    f"{self.settings.ollama_base_url}/api/generate",
+                    headers={"Content-Type": "application/json"},
+                    json=payload,
+                )
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPStatusError as exc:
+                if (
+                    fallback_model
+                    and fallback_model != model
+                    and exc.response.status_code in {400, 404, 500}
+                ):
+                    payload["model"] = fallback_model
+                    retry = client.post(
+                        f"{self.settings.ollama_base_url}/api/generate",
+                        headers={"Content-Type": "application/json"},
+                        json=payload,
+                    )
+                    retry.raise_for_status()
+                    return retry.json()
+                raise
+
     def predict_canonical_command(
         self, request: CanonicalCommandPredictionRequest
     ) -> CanonicalCommandPredictionResponse | None:
@@ -92,53 +174,43 @@ class RemoteModelClient:
         return CanonicalCommandPredictionResponse.model_validate(payload)
 
     def _plan_with_ollama(self, request: ActionPlanRequest) -> ActionPlanResponse:
-        import httpx
-
         prompt = self._build_action_plan_prompt(request)
-
-        with httpx.Client(timeout=self.settings.model_api_timeout_s) as client:
-            response = client.post(
-                f"{self.settings.ollama_base_url}/api/generate",
-                headers={"Content-Type": "application/json"},
-                json={
-                    "model": self.settings.ollama_planner_model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "format": "json",
-                    "options": {
-                        "temperature": self.settings.ollama_planner_temperature,
-                        "num_predict": self.settings.ollama_planner_num_predict,
-                    },
-                },
-            )
-            response.raise_for_status()
-            payload = response.json()
+        language = self._resolve_language(
+            request.command.preferred_language,
+            request.command.constraints.expected_language if request.command.constraints else None,
+            request.command.raw_text,
+            request.command.normalized_text,
+        )
+        payload = self._post_ollama_json_request(
+            model=self._select_planner_model(language),
+            fallback_model=self.settings.ollama_planner_model,
+            prompt=prompt,
+            options={
+                "temperature": self.settings.ollama_planner_temperature,
+                "num_predict": self.settings.ollama_planner_num_predict,
+            },
+        )
 
         raw_response = payload.get("response", "")
         return ActionPlanResponse.model_validate(self._load_json_response(raw_response))
 
     def _decide_next_action_with_ollama(self, request: NextActionRequest) -> NextActionResponse:
-        import httpx
-
         prompt = self._build_next_action_prompt(request)
-
-        with httpx.Client(timeout=self.settings.model_api_timeout_s) as client:
-            response = client.post(
-                f"{self.settings.ollama_base_url}/api/generate",
-                headers={"Content-Type": "application/json"},
-                json={
-                    "model": self.settings.ollama_planner_model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "format": "json",
-                    "options": {
-                        "temperature": self.settings.ollama_planner_temperature,
-                        "num_predict": self.settings.ollama_planner_num_predict,
-                    },
-                },
-            )
-            response.raise_for_status()
-            payload = response.json()
+        language = self._resolve_language(
+            request.command.preferred_language,
+            request.command.constraints.expected_language if request.command.constraints else None,
+            request.command.raw_text,
+            request.command.normalized_text,
+        )
+        payload = self._post_ollama_json_request(
+            model=self._select_planner_model(language),
+            fallback_model=self.settings.ollama_planner_model,
+            prompt=prompt,
+            options={
+                "temperature": self.settings.ollama_planner_temperature,
+                "num_predict": self.settings.ollama_planner_num_predict,
+            },
+        )
 
         raw_response = payload.get("response", "")
         return NextActionResponse.model_validate(self._load_json_response(raw_response))
@@ -146,26 +218,20 @@ class RemoteModelClient:
     def _predict_with_ollama(
         self, request: CanonicalCommandPredictionRequest
     ) -> CanonicalCommandPredictionResponse:
-        import httpx
-
         prompt = self._build_ollama_prompt(request)
-
-        with httpx.Client(timeout=self.settings.model_api_timeout_s) as client:
-            response = client.post(
-                f"{self.settings.ollama_base_url}/api/generate",
-                headers={"Content-Type": "application/json"},
-                json={
-                    "model": self.settings.ollama_model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "format": "json",
-                    "options": {
-                        "temperature": 0.1,
-                    },
-                },
-            )
-            response.raise_for_status()
-            payload = response.json()
+        language = self._resolve_language(
+            request.preferred_language,
+            request.raw_text,
+            request.normalized_text,
+        )
+        payload = self._post_ollama_json_request(
+            model=self._select_general_model(language),
+            fallback_model=self.settings.ollama_model,
+            prompt=prompt,
+            options={
+                "temperature": 0.1,
+            },
+        )
 
         raw_response = payload.get("response", "")
         return CanonicalCommandPredictionResponse.model_validate(self._load_json_response(raw_response))
@@ -175,54 +241,37 @@ class RemoteModelClient:
         request: VisionObservationRequest,
         image_base64: str,
     ) -> VisionObservationResponse:
-        import httpx
-
         prompt = self._build_vision_observation_prompt(request)
-
-        with httpx.Client(timeout=self.settings.model_api_timeout_s) as client:
-            response = client.post(
-                f"{self.settings.ollama_base_url}/api/generate",
-                headers={"Content-Type": "application/json"},
-                json={
-                    "model": self.settings.ollama_vision_model,
-                    "prompt": prompt,
-                    "images": [image_base64],
-                    "stream": False,
-                    "format": "json",
-                    "options": {
-                        "temperature": 0.0,
-                        "num_predict": self.settings.ollama_vision_num_predict,
-                    },
-                },
-            )
-            response.raise_for_status()
-            payload = response.json()
+        payload = self._post_ollama_json_request(
+            model=self.settings.ollama_vision_model,
+            prompt=prompt,
+            images=[image_base64],
+            options={
+                "temperature": 0.0,
+                "num_predict": self.settings.ollama_vision_num_predict,
+            },
+        )
 
         raw_response = payload.get("response", "")
         return VisionObservationResponse.model_validate(self._load_json_response(raw_response))
 
     def _summarize_popup_with_ollama(self, request: PopupSummaryRequest) -> PopupSummaryResponse:
-        import httpx
-
         prompt = self._build_popup_summary_prompt(request)
-
-        with httpx.Client(timeout=self.settings.model_api_timeout_s) as client:
-            response = client.post(
-                f"{self.settings.ollama_base_url}/api/generate",
-                headers={"Content-Type": "application/json"},
-                json={
-                    "model": self.settings.ollama_model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "format": "json",
-                    "options": {
-                        "temperature": 0.2,
-                        "num_predict": 180,
-                    },
-                },
-            )
-            response.raise_for_status()
-            payload = response.json()
+        language = self._resolve_language(
+            request.language,
+            request.command.preferred_language,
+            request.command.constraints.expected_language if request.command.constraints else None,
+            request.command.raw_text,
+        )
+        payload = self._post_ollama_json_request(
+            model=self._select_general_model(language),
+            fallback_model=self.settings.ollama_model,
+            prompt=prompt,
+            options={
+                "temperature": 0.2,
+                "num_predict": 180,
+            },
+        )
 
         raw_response = payload.get("response", "")
         return PopupSummaryResponse.model_validate(self._load_json_response(raw_response))
@@ -309,11 +358,12 @@ Rules:
 - For Naver or browser search, use intent "search_and_read" and target_app "browser".
 - For Naver Map route requests, use intent "find_map_route" and target_app "naver_map".
 - Keep normalized_text concise and task-oriented.
-- notes should include "ollama_qwen2_5_14b".
+- notes should include "ollama_canonicalization".
 
 input_mode: {request.input_mode}
 raw_text: {request.raw_text}
 normalized_text_candidate: {request.normalized_text}
+preferred_language: {request.preferred_language or "unknown"}
 """.strip()
 
     def build_canonicalization_debug_payload(
@@ -326,7 +376,13 @@ normalized_text_candidate: {request.normalized_text}
             "request": request.model_dump(),
         }
         if self.settings.model_provider == "ollama":
-            payload["model"] = self.settings.ollama_model
+            payload["model"] = self._select_general_model(
+                self._resolve_language(
+                    request.preferred_language,
+                    request.raw_text,
+                    request.normalized_text,
+                )
+            )
             payload["prompt"] = self._build_ollama_prompt(request)
         elif self.settings.model_api_url:
             payload["model_api_url"] = self.settings.model_api_url
@@ -459,7 +515,14 @@ result:
             "request": request.model_dump(),
         }
         if self.settings.model_provider == "ollama":
-            payload["model"] = self.settings.ollama_planner_model
+            payload["model"] = self._select_planner_model(
+                self._resolve_language(
+                    request.command.preferred_language,
+                    request.command.constraints.expected_language if request.command.constraints else None,
+                    request.command.raw_text,
+                    request.command.normalized_text,
+                )
+            )
             payload["prompt"] = self._build_action_plan_prompt(request)
         return payload
 
@@ -552,6 +615,13 @@ last_result:
             "request": request.model_dump(),
         }
         if self.settings.model_provider == "ollama":
-            payload["model"] = self.settings.ollama_planner_model
+            payload["model"] = self._select_planner_model(
+                self._resolve_language(
+                    request.command.preferred_language,
+                    request.command.constraints.expected_language if request.command.constraints else None,
+                    request.command.raw_text,
+                    request.command.normalized_text,
+                )
+            )
             payload["prompt"] = self._build_next_action_prompt(request)
         return payload

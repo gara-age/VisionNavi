@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -18,6 +19,16 @@ DEFAULT_COMMANDS = [
     "Search Naver for Seoul youth housing support and read the eligibility conditions.",
     "Search Google for OpenAI Codex and summarize the results page.",
 ]
+
+
+def _infer_preferred_language(text: str) -> str:
+    if re.search(r"[\u3040-\u30ff\u4e00-\u9faf]", text):
+        return "ja"
+    if re.search(r"[\uac00-\ud7a3]", text):
+        return "ko"
+    if re.search(r"[A-Za-z]", text):
+        return "en"
+    return "unknown"
 
 
 @dataclass
@@ -40,6 +51,11 @@ class BrowserBenchmarkResult:
     query_tokens: list[str]
     visited_domains: list[str]
     final_domain: str | None
+    provider_match: bool | None
+    query_preserved: bool | None
+    language_match: bool | None
+    attempted_repair: bool | None
+    blocked_before_execution: bool
 
 
 def _poll_session(
@@ -68,14 +84,23 @@ def _extract_result(command: str, session_id: str, snapshot: dict[str, Any]) -> 
     result = snapshot.get("result") or {}
     summary = result.get("execution_summary") or {}
     validation = (result.get("raw_agent_trace") or {}).get("validation") or result.get("validation") or {}
+    constraint_validation = result.get("constraint_validation") or validation
     matched_tokens = validation.get("matched_tokens") or []
     query_tokens = validation.get("query_tokens") or []
     visited_domains = validation.get("visited_domains") or []
     final_domain = validation.get("final_domain")
+    provider_match = validation.get("reason") not in {
+        "external_browser_agent_provider_mismatch",
+        "external_browser_agent_off_target_navigation",
+    }
+    query_preserved = validation.get("reason") != "external_browser_agent_query_changed"
+    language_match = validation.get("reason") != "external_browser_agent_unexpected_language"
+    attempted_repair = constraint_validation.get("attempted_repair") if isinstance(constraint_validation, dict) else None
     failure_reason = summary.get("failure_reason") or result.get("failure_reason")
     result_status = result.get("status")
     fallback_backend = summary.get("fallback_backend")
     outcome_class = _classify_outcome(result_status, fallback_backend)
+    blocked_before_execution = str(result.get("strategy") or "") == "command-constraint-validator"
     return BrowserBenchmarkResult(
         command=command,
         session_id=session_id,
@@ -95,6 +120,11 @@ def _extract_result(command: str, session_id: str, snapshot: dict[str, Any]) -> 
         query_tokens=list(query_tokens),
         visited_domains=list(visited_domains),
         final_domain=final_domain,
+        provider_match=provider_match,
+        query_preserved=query_preserved,
+        language_match=language_match,
+        attempted_repair=attempted_repair,
+        blocked_before_execution=blocked_before_execution,
     )
 
 
@@ -119,6 +149,11 @@ def _build_summary(results: list[BrowserBenchmarkResult]) -> dict[str, Any]:
             "failures": 0,
             "average_duration_ms": None,
             "average_step_count": None,
+            "provider_match_rate": None,
+            "query_preservation_rate": None,
+            "language_match_rate": None,
+            "repair_success_rate": None,
+            "blocked_before_execution_count": 0,
             "by_command": [],
         }
 
@@ -129,6 +164,10 @@ def _build_summary(results: list[BrowserBenchmarkResult]) -> dict[str, Any]:
     durations = [float(item.duration_ms) for item in results if item.duration_ms is not None]
     step_counts = [item.step_count for item in results if item.step_count is not None]
     grouped: dict[str, list[BrowserBenchmarkResult]] = {}
+    provider_matches = [item.provider_match for item in results if item.provider_match is not None]
+    query_preserved = [item.query_preserved for item in results if item.query_preserved is not None]
+    language_matches = [item.language_match for item in results if item.language_match is not None]
+    repairs = [item for item in results if item.attempted_repair is True]
     for item in results:
         grouped.setdefault(item.command, []).append(item)
 
@@ -157,6 +196,23 @@ def _build_summary(results: list[BrowserBenchmarkResult]) -> dict[str, Any]:
                         if item.failure_reason
                     }
                 ),
+                "provider_match_rate": round(
+                    sum(1 for item in items if item.provider_match is True) / len([item for item in items if item.provider_match is not None]),
+                    4,
+                ) if any(item.provider_match is not None for item in items) else None,
+                "query_preservation_rate": round(
+                    sum(1 for item in items if item.query_preserved is True) / len([item for item in items if item.query_preserved is not None]),
+                    4,
+                ) if any(item.query_preserved is not None for item in items) else None,
+                "language_match_rate": round(
+                    sum(1 for item in items if item.language_match is True) / len([item for item in items if item.language_match is not None]),
+                    4,
+                ) if any(item.language_match is not None for item in items) else None,
+                "repair_success_rate": round(
+                    sum(1 for item in items if item.attempted_repair and item.success) / len([item for item in items if item.attempted_repair is True]),
+                    4,
+                ) if any(item.attempted_repair is True for item in items) else None,
+                "blocked_before_execution_count": sum(1 for item in items if item.blocked_before_execution),
             }
         )
 
@@ -171,6 +227,19 @@ def _build_summary(results: list[BrowserBenchmarkResult]) -> dict[str, Any]:
         "failures": failure_count,
         "average_duration_ms": round(sum(durations) / len(durations), 2) if durations else None,
         "average_step_count": round(sum(step_counts) / len(step_counts), 2) if step_counts else None,
+        "provider_match_rate": round(sum(1 for item in provider_matches if item) / len(provider_matches), 4)
+        if provider_matches
+        else None,
+        "query_preservation_rate": round(sum(1 for item in query_preserved if item) / len(query_preserved), 4)
+        if query_preserved
+        else None,
+        "language_match_rate": round(sum(1 for item in language_matches if item) / len(language_matches), 4)
+        if language_matches
+        else None,
+        "repair_success_rate": round(sum(1 for item in repairs if item.attempted_repair and item.success) / len(repairs), 4)
+        if repairs
+        else None,
+        "blocked_before_execution_count": sum(1 for item in results if item.blocked_before_execution),
         "by_command": by_command,
     }
 
@@ -199,6 +268,7 @@ def main() -> int:
                     json={
                         "text": command,
                         "execution_backend": "external_browser_agent",
+                        "preferred_language": _infer_preferred_language(command),
                     },
                 )
                 response.raise_for_status()

@@ -11,6 +11,7 @@ from app.core.settings import Settings
 from app.automation.browser.executor import BrowserExecutor
 from app.models.agent_adapter import AgentAdapterRequest, AgentAdapterResponse
 from app.models.execution_backend import ExecutionBackend
+from app.services.command_constraint_service import CommandConstraintService
 from app.services.model_client import RemoteModelClient
 
 
@@ -19,10 +20,12 @@ class ExternalBrowserAgentAdapter:
         self,
         browser_executor: BrowserExecutor,
         model_client: RemoteModelClient,
+        command_constraint_service: CommandConstraintService | None = None,
         settings: Settings | None = None,
     ) -> None:
         self.browser_executor = browser_executor
         self.model_client = model_client
+        self.command_constraint_service = command_constraint_service or CommandConstraintService()
         self.settings = settings or Settings.from_env()
         self.execution_backend: ExecutionBackend = "external_browser_agent"
 
@@ -71,6 +74,30 @@ class ExternalBrowserAgentAdapter:
 
         search_request = self.browser_executor._extract_search_request(request.command.normalized_text)  # noqa: SLF001
         task = self._build_task(request, search_request)
+        preflight_validation = self._validate_request_constraints(request, search_request, task)
+        if not preflight_validation["ok"]:
+            return AgentAdapterResponse(
+                status="failed",
+                execution_backend=self.execution_backend,
+                result={
+                    "status": "failed",
+                    "executor": "browser",
+                    "strategy": "browser-use",
+                    "failure_reason": preflight_validation["reason"],
+                    "validation": self._safe_dump(preflight_validation),
+                    "step_count": 0,
+                },
+                raw_agent_trace={
+                    "adapter": self.execution_backend,
+                    "preflight_validation": self._safe_dump(preflight_validation),
+                    "task": task,
+                },
+                normalized_agent_trace=[
+                    {"phase": "observe", "detail": "Prepared browser-use task input"},
+                    {"phase": "verify", "detail": "Preflight command constraint validation failed"},
+                ],
+                blocked_reason=str(preflight_validation["reason"]),
+            )
         profile_dir = self.browser_executor._resolve_debug_profile_dir()  # noqa: SLF001
         chrome_path = self.browser_executor._resolve_chrome_path()  # noqa: SLF001
         cdp_endpoint = self.browser_executor._resolve_cdp_endpoint()  # noqa: SLF001
@@ -94,6 +121,7 @@ class ExternalBrowserAgentAdapter:
                 "policy_flags": request.policy_flags,
             },
             "task": task,
+            "preflight_validation": self._safe_dump(preflight_validation),
             "browser_config": {
                 "profile_dir": str(profile_dir),
                 "chrome_path": chrome_path,
@@ -108,9 +136,9 @@ class ExternalBrowserAgentAdapter:
         browser_profile = BrowserProfile(
             headless=self.settings.browser_headless,
             keep_alive=True,
-            minimum_wait_page_load_time=0.25,
-            wait_for_network_idle_page_load_time=0.5,
-            wait_between_actions=0.2,
+            minimum_wait_page_load_time=0.1,
+            wait_for_network_idle_page_load_time=0.25,
+            wait_between_actions=0.1,
             highlight_elements=False,
         )
         browser_session = BrowserSession(
@@ -165,16 +193,16 @@ class ExternalBrowserAgentAdapter:
             directly_open_url=True,
             use_judge=False,
             final_response_after_failure=True,
-            max_actions_per_step=3,
-            max_failures=3,
+            max_actions_per_step=2,
+            max_failures=2,
             step_timeout=self.settings.external_browser_agent_step_timeout_s,
-            enable_planning=True,
+            enable_planning=False,
         )
 
         started_at = time.perf_counter()
         total_timeout_s = max(
             self.settings.external_browser_agent_step_timeout_s,
-            (self.settings.external_browser_agent_step_timeout_s * self.settings.external_browser_agent_max_steps) + 30,
+            (self.settings.external_browser_agent_step_timeout_s * self.settings.external_browser_agent_max_steps) + 5,
         )
         try:
             history = await asyncio.wait_for(
@@ -246,6 +274,7 @@ class ExternalBrowserAgentAdapter:
             summary=final_result,
             history_urls=history_urls,
             callback_steps=callback_steps,
+            request=request,
         )
         raw_trace["validation"] = self._safe_dump(validation)
         if success and not validation["ok"]:
@@ -290,10 +319,12 @@ class ExternalBrowserAgentAdapter:
         target = search_request["target"]
         query = search_request["query"]
         search_url = self.browser_executor._build_search_url(target, query)  # noqa: SLF001
+        expected_language = getattr(request.command.constraints, "expected_language", "unknown")
         return (
             f"You are operating a real browser to complete a search-and-read task.\n"
             f"Preferred site or engine: {target}\n"
             f"Exact search query: {query}\n"
+            f"Expected language: {expected_language}\n"
             f"Required starting URL: {search_url}\n"
             "Rules:\n"
             "- Start from a clean tab and treat this task as independent from any previously open page.\n"
@@ -310,6 +341,45 @@ class ExternalBrowserAgentAdapter:
             "- Return a concise summary of what you found.\n"
             f"User command: {request.command.normalized_text}"
         )
+
+    def _validate_request_constraints(
+        self,
+        request: AgentAdapterRequest,
+        search_request: dict[str, str],
+        task: str,
+    ) -> dict[str, object]:
+        constraints = request.command.constraints
+        if constraints is None:
+            return {"ok": True, "reason": None}
+
+        target = str(search_request.get("target", "")).strip().lower()
+        query = str(search_request.get("query", "")).strip()
+        failures: list[str] = []
+        expected_domains = self._expected_domains_for_target(target)
+        search_url = self.browser_executor._build_search_url(target, query)  # noqa: SLF001
+        final_domain = self._extract_domain(search_url)
+
+        if constraints.provider not in {"unknown", "browser"}:
+            provider_matches = (
+                constraints.provider == target
+                or constraints.provider == final_domain
+                or constraints.provider in expected_domains
+            )
+            if not provider_matches:
+                failures.append("external_browser_agent_provider_mismatch")
+        if constraints.query_text and self._normalize_compare_text(constraints.query_text) != self._normalize_compare_text(query):
+            failures.append("external_browser_agent_query_changed")
+        if constraints.expected_language != "unknown" and constraints.expected_language not in task.lower():
+            failures.append("external_browser_agent_unexpected_language")
+
+        return {
+            "ok": not failures,
+            "reason": failures[0] if failures else None,
+            "violations": failures,
+            "final_domain": final_domain,
+            "query": query,
+            "expected_query": constraints.query_text,
+        }
 
     async def _prepare_clean_browser_session(self, async_playwright, cdp_endpoint: str) -> dict[str, object]:  # noqa: ANN001
         closed_pages = 0
@@ -366,6 +436,7 @@ class ExternalBrowserAgentAdapter:
         summary: object,
         history_urls: object,
         callback_steps: list[dict[str, object]],
+        request: AgentAdapterRequest,
     ) -> dict[str, object]:
         summary_text = str(summary or "").strip()
         history_url_list = [str(item).strip() for item in history_urls if str(item).strip()] if isinstance(history_urls, list) else []
@@ -388,6 +459,7 @@ class ExternalBrowserAgentAdapter:
             if domain
         ]
         final_domain = visited_domains[-1] if visited_domains else ""
+        constraints = request.command.constraints
         has_expected_domain = not expected_domains or any(
             any(expected in visited for expected in expected_domains)
             for visited in visited_domains
@@ -414,6 +486,43 @@ class ExternalBrowserAgentAdapter:
                 "final_domain": final_domain,
                 "expected_domains": expected_domains,
             }
+        if constraints is not None and constraints.provider not in {"unknown", "browser"}:
+            provider_match = any(constraints.provider in domain for domain in visited_domains) or constraints.provider in final_domain
+            if not provider_match:
+                return {
+                    "ok": False,
+                    "reason": "external_browser_agent_provider_mismatch",
+                    "matched_tokens": matched_tokens,
+                    "query_tokens": query_tokens,
+                    "visited_domains": visited_domains,
+                    "final_domain": final_domain,
+                    "expected_provider": constraints.provider,
+                }
+        if constraints is not None and constraints.expected_language != "unknown":
+            detected_language = self.command_constraint_service._detect_language(summary_text)  # noqa: SLF001
+            if detected_language != constraints.expected_language:
+                return {
+                    "ok": False,
+                    "reason": "external_browser_agent_unexpected_language",
+                    "matched_tokens": matched_tokens,
+                    "query_tokens": query_tokens,
+                    "visited_domains": visited_domains,
+                    "final_domain": final_domain,
+                    "expected_language": constraints.expected_language,
+                    "detected_language": detected_language,
+                }
+        if constraints is not None and constraints.query_text:
+            if self._normalize_compare_text(query) != self._normalize_compare_text(constraints.query_text):
+                return {
+                    "ok": False,
+                    "reason": "external_browser_agent_query_changed",
+                    "matched_tokens": matched_tokens,
+                    "query_tokens": query_tokens,
+                    "visited_domains": visited_domains,
+                    "final_domain": final_domain,
+                    "expected_query": constraints.query_text,
+                    "detected_query": query,
+                }
         if query_tokens and len(matched_tokens) < required_matches:
             return {
                 "ok": False,
@@ -432,6 +541,9 @@ class ExternalBrowserAgentAdapter:
             "visited_domains": visited_domains,
             "final_domain": final_domain,
         }
+
+    def _normalize_compare_text(self, text: str) -> str:
+        return re.sub(r"\s+", " ", str(text or "").strip()).lower()
 
     def _query_tokens(self, query: str) -> list[str]:
         stopwords = {

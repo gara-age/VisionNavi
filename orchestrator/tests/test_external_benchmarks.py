@@ -94,6 +94,11 @@ def test_browser_benchmark_summary_splits_external_only_and_fallback_success() -
                 query_tokens=[],
                 visited_domains=[],
                 final_domain=None,
+                provider_match=True,
+                query_preserved=True,
+                language_match=True,
+                attempted_repair=False,
+                blocked_before_execution=False,
             ),
             BrowserBenchmarkResult(
                 command="a",
@@ -114,6 +119,11 @@ def test_browser_benchmark_summary_splits_external_only_and_fallback_success() -
                 query_tokens=[],
                 visited_domains=[],
                 final_domain=None,
+                provider_match=True,
+                query_preserved=True,
+                language_match=True,
+                attempted_repair=True,
+                blocked_before_execution=False,
             ),
             BrowserBenchmarkResult(
                 command="b",
@@ -134,6 +144,11 @@ def test_browser_benchmark_summary_splits_external_only_and_fallback_success() -
                 query_tokens=[],
                 visited_domains=[],
                 final_domain=None,
+                provider_match=False,
+                query_preserved=True,
+                language_match=True,
+                attempted_repair=False,
+                blocked_before_execution=True,
             ),
         ]
     )
@@ -142,6 +157,9 @@ def test_browser_benchmark_summary_splits_external_only_and_fallback_success() -
     assert summary["external_only_successes"] == 1
     assert summary["fallback_successes"] == 1
     assert summary["failures"] == 1
+    assert summary["provider_match_rate"] == 0.6667
+    assert summary["repair_success_rate"] == 1.0
+    assert summary["blocked_before_execution_count"] == 1
 
 
 def test_desktop_benchmark_summary_splits_final_and_external_exact_match() -> None:

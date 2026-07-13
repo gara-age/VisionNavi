@@ -13,6 +13,7 @@ from app.models.agent_adapter import AgentAdapterRequest
 from app.models.canonical_command import CanonicalCommand
 from app.models.execution_backend import ExecutionBackend
 from app.models.model_api import ActionPlanRequest, NextActionRequest
+from app.services.command_constraint_service import CommandConstraintService
 from app.services.model_client import RemoteModelClient
 from app.services.session_store import SessionStore
 
@@ -37,9 +38,11 @@ class AgentLoop:
         self.browser_executor = BrowserExecutor()
         self.desktop_executor = DesktopExecutor()
         self.model_client = RemoteModelClient()
+        self.command_constraint_service = CommandConstraintService()
         self.external_browser_agent = ExternalBrowserAgentAdapter(
             self.browser_executor,
             self.model_client,
+            self.command_constraint_service,
         )
         self.external_desktop_agent = ExternalDesktopAgentAdapter(
             self.desktop_executor,
@@ -212,10 +215,30 @@ class AgentLoop:
         planned_actions: list[ActionStep] | None = None,
         requested_backend: ExecutionBackend | None = None,
     ) -> dict[str, object]:
+        command, constraint_validation = self._validate_command_constraints(command)
+        if not constraint_validation.ok:
+            return self._finalize_execution_result(
+                command,
+                {
+                    "status": "failed",
+                    "reason": str(constraint_validation.failure_reason or "constraint_repair_failed"),
+                    "failure_reason": str(constraint_validation.failure_reason or "constraint_repair_failed"),
+                    "executor": command.task_domain,
+                    "strategy": "command-constraint-validator",
+                    "execution_backend": requested_backend or self._default_backend_for_command(command),
+                    "requested_backend": requested_backend,
+                    "constraint_validation": constraint_validation.model_dump(),
+                    "validation": constraint_validation.model_dump(),
+                    "blocked_reason": str(constraint_validation.failure_reason or "constraint_repair_failed"),
+                },
+                blocked_reason=str(constraint_validation.failure_reason or "constraint_repair_failed"),
+            )
+
         resolution = self._resolve_execution_backend(command, requested_backend)
         execution_backend = resolution.effective_backend
         policy_flags = {
             "fallback_to_internal": self.settings.external_agent_fallback_to_internal,
+            "allow_cross_provider_fallback": self.settings.external_browser_cross_provider_fallback_allowed,
         }
 
         if execution_backend == "external_browser_agent":
@@ -252,6 +275,12 @@ class AgentLoop:
             internal_result["requested_backend"] = resolution.requested_backend
             internal_result["backend_resolution_reason"] = resolution.routing_reason
             internal_result["unsupported_requested_backend"] = resolution.unsupported_requested_backend
+            if not self._can_use_internal_browser_fallback(command, result):
+                return self._finalize_execution_result(
+                    command,
+                    result,
+                    blocked_reason=adapter_result.blocked_reason,
+                )
             return self._finalize_execution_result(
                 command,
                 internal_result,
@@ -422,6 +451,42 @@ class AgentLoop:
             "step_count": step_count,
         }
         return sanitized
+
+    def _validate_command_constraints(self, command: CanonicalCommand) -> tuple[CanonicalCommand, object]:
+        if not self.settings.command_constraint_validation_enabled:
+            from app.models.command_constraint import CommandValidationResult
+
+            return command, CommandValidationResult(ok=True)
+        if command.intent not in self.settings.constraint_enforced_intents:
+            from app.models.command_constraint import CommandValidationResult
+
+            result = CommandValidationResult(ok=True)
+            result.notes.append("constraint_not_enforced_for_intent")
+            return command, result
+        return self.command_constraint_service.validate_and_repair(
+            command,
+            allow_repair=self.settings.command_constraint_repair_enabled,
+            max_repairs=self.settings.command_constraint_max_repairs,
+        )
+
+    def _default_backend_for_command(self, command: CanonicalCommand) -> ExecutionBackend:
+        if command.task_domain == "desktop":
+            return self.settings.default_desktop_execution_backend
+        return self.settings.default_browser_execution_backend
+
+    def _can_use_internal_browser_fallback(self, command: CanonicalCommand, result: dict[str, object]) -> bool:
+        if self.settings.external_browser_cross_provider_fallback_allowed:
+            return True
+        constraints = command.constraints
+        if constraints is None or constraints.provider in {"unknown", "browser", "desktop"}:
+            return True
+        validation = result.get("validation")
+        if isinstance(validation, dict):
+            failure_reason = str(validation.get("reason") or result.get("failure_reason") or "")
+            if "provider_mismatch" in failure_reason:
+                return False
+        failure_reason = str(result.get("failure_reason") or result.get("reason") or "")
+        return "provider_mismatch" not in failure_reason
 
     def _extract_failure_reason(
         self,

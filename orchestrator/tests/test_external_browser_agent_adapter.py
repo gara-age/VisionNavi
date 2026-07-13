@@ -3,6 +3,8 @@ import asyncio
 from app.automation.browser.executor import BrowserExecutor
 from app.automation.browser.external_agent_adapter import ExternalBrowserAgentAdapter
 from app.core.settings import Settings
+from app.models.agent_adapter import AgentAdapterRequest
+from app.models.canonical_command import CanonicalCommand
 
 
 def _build_adapter() -> ExternalBrowserAgentAdapter:
@@ -15,12 +17,27 @@ def _build_adapter() -> ExternalBrowserAgentAdapter:
 
 def test_validate_run_output_accepts_grounded_summary() -> None:
     adapter = _build_adapter()
+    request = AgentAdapterRequest(
+        command=CanonicalCommand(
+            input_mode="text",
+            raw_text="Search Naver for VisionNavi and read a short summary.",
+            normalized_text="Search Naver for VisionNavi and read a short summary.",
+            task_domain="web",
+            intent="search_and_read",
+            risk_level="low",
+            requires_confirmation=False,
+            target_app="browser",
+            notes=[],
+        ),
+        observation={},
+    )
 
     result = adapter._validate_run_output(  # noqa: SLF001
         search_request={"target": "naver", "query": "VisionNavi"},
         summary="VisionNavi is an automation project that interprets commands and executes them in browser and desktop environments.",
         history_urls=["https://search.naver.com/search.naver?query=VisionNavi"],
         callback_steps=[{"title": "VisionNavi search results"}],
+        request=request,
     )
 
     assert result["ok"] is True
@@ -29,12 +46,27 @@ def test_validate_run_output_accepts_grounded_summary() -> None:
 
 def test_validate_run_output_rejects_off_target_navigation() -> None:
     adapter = _build_adapter()
+    request = AgentAdapterRequest(
+        command=CanonicalCommand(
+            input_mode="text",
+            raw_text="Search Google for VisionNavi and read a short summary.",
+            normalized_text="Search Google for VisionNavi and read a short summary.",
+            task_domain="web",
+            intent="search_and_read",
+            risk_level="low",
+            requires_confirmation=False,
+            target_app="browser",
+            notes=[],
+        ),
+        observation={},
+    )
 
     result = adapter._validate_run_output(  # noqa: SLF001
         search_request={"target": "google", "query": "VisionNavi"},
         summary="VisionNavi appears to be a browser automation tool.",
         history_urls=["https://www.amazon.com/s?k=laptop"],
         callback_steps=[{"title": "Amazon.com: laptops"}],
+        request=request,
     )
 
     assert result["ok"] is False
@@ -43,6 +75,20 @@ def test_validate_run_output_rejects_off_target_navigation() -> None:
 
 def test_validate_run_output_rejects_navigation_drift_when_final_domain_is_wrong() -> None:
     adapter = _build_adapter()
+    request = AgentAdapterRequest(
+        command=CanonicalCommand(
+            input_mode="text",
+            raw_text="Search Naver for Incheon youth monthly rent support and read the conditions.",
+            normalized_text="Search Naver for Incheon youth monthly rent support and read the conditions.",
+            task_domain="web",
+            intent="search_and_read",
+            risk_level="low",
+            requires_confirmation=False,
+            target_app="browser",
+            notes=[],
+        ),
+        observation={},
+    )
 
     result = adapter._validate_run_output(  # noqa: SLF001
         search_request={"target": "naver", "query": "Incheon youth monthly rent support"},
@@ -52,6 +98,7 @@ def test_validate_run_output_rejects_navigation_drift_when_final_domain_is_wrong
             "https://duckduckgo.com/?q=seoul+rent+support",
         ],
         callback_steps=[{"title": "Naver result page"}],
+        request=request,
     )
 
     assert result["ok"] is False
@@ -61,12 +108,27 @@ def test_validate_run_output_rejects_navigation_drift_when_final_domain_is_wrong
 
 def test_validate_run_output_rejects_off_target_summary() -> None:
     adapter = _build_adapter()
+    request = AgentAdapterRequest(
+        command=CanonicalCommand(
+            input_mode="text",
+            raw_text="Search Naver for Incheon youth monthly rent support and read the conditions.",
+            normalized_text="Search Naver for Incheon youth monthly rent support and read the conditions.",
+            task_domain="web",
+            intent="search_and_read",
+            risk_level="low",
+            requires_confirmation=False,
+            target_app="browser",
+            notes=[],
+        ),
+        observation={},
+    )
 
     result = adapter._validate_run_output(  # noqa: SLF001
         search_request={"target": "naver", "query": "Incheon youth monthly rent support"},
         summary="This page compares the latest gaming laptops and online shopping deals.",
         history_urls=["https://search.naver.com/search.naver?query=incheon+youth+monthly+rent+support"],
         callback_steps=[{"title": "Laptop deals"}],
+        request=request,
     )
 
     assert result["ok"] is False
@@ -75,12 +137,27 @@ def test_validate_run_output_rejects_off_target_summary() -> None:
 
 def test_validate_run_output_keeps_single_token_query_like_youtube() -> None:
     adapter = _build_adapter()
+    request = AgentAdapterRequest(
+        command=CanonicalCommand(
+            input_mode="text",
+            raw_text="Search Google for YouTube and summarize the results page.",
+            normalized_text="Search Google for YouTube and summarize the results page.",
+            task_domain="web",
+            intent="search_and_read",
+            risk_level="low",
+            requires_confirmation=False,
+            target_app="browser",
+            notes=[],
+        ),
+        observation={},
+    )
 
     result = adapter._validate_run_output(  # noqa: SLF001
         search_request={"target": "google", "query": "YouTube"},
         summary="Google results page for YouTube with links to the official video platform.",
         history_urls=["https://www.google.com/search?q=youtube"],
         callback_steps=[{"title": "YouTube - Google Search"}],
+        request=request,
     )
 
     assert result["ok"] is True
