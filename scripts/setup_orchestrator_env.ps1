@@ -5,13 +5,44 @@ $projectRoot = (Get-Location).Path
 $preferredVenvRoot = if ($env:VISIONNAVI_ORCHESTRATOR_VENV -and $env:VISIONNAVI_ORCHESTRATOR_VENV.Trim()) {
   $env:VISIONNAVI_ORCHESTRATOR_VENV.Trim()
 } else {
-  "D:\VisionNaviRuntime\orchestrator-venv"
+  "D:\VisionNaviRuntime\orchestrator-venv-new"
 }
 
 $venvRoot = $preferredVenvRoot
 
+function Resolve-BootstrapPython {
+  $candidates = @(
+    "C:\Users\USER\AppData\Local\Programs\Python\Python311\python.exe",
+    "C:\Users\USER\AppData\Local\Python\bin\python.exe",
+    "C:\anaconda\python.exe"
+  )
+
+  foreach ($candidate in $candidates) {
+    if (-not (Test-Path $candidate)) {
+      continue
+    }
+    try {
+      $prefix = & $candidate -c "import sys; print(sys.base_prefix)"
+      if ($LASTEXITCODE -eq 0 -and $prefix) {
+        return $candidate
+      }
+    } catch {
+      continue
+    }
+  }
+
+  return $null
+}
+
+$bootstrapPython = Resolve-BootstrapPython
+
+if (-not $bootstrapPython) {
+  Write-Error "No healthy bootstrap Python interpreter found."
+  exit 1
+}
+
 if (-not (Test-Path $venvRoot)) {
-  python -m venv $venvRoot
+  & $bootstrapPython -m venv $venvRoot
   if ($LASTEXITCODE -ne 0) { throw "venv creation failed" }
 }
 

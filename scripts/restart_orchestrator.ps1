@@ -115,15 +115,19 @@ function Set-OrchestratorEnvironment {
     $env:MODEL_PROVIDER = "ollama"
     $env:OLLAMA_BASE_URL = "http://127.0.0.1:11434"
     $env:OLLAMA_MODEL = "qwen2.5:14b"
+    $env:OLLAMA_MODEL_KO = "exaone3.5:7.8b"
+    $env:OLLAMA_MODEL_JA = "dsasai/llama3-elyza-jp-8b"
     $env:OLLAMA_PLANNER_MODEL = "qwen2.5:7b"
+    $env:OLLAMA_PLANNER_MODEL_KO = "exaone3.5:7.8b"
+    $env:OLLAMA_PLANNER_MODEL_JA = "dsasai/llama3-elyza-jp-8b"
     $env:OLLAMA_VISION_MODEL = "qwen2.5vl:3b"
     $env:OLLAMA_VISION_ENABLED = "true"
     $env:OLLAMA_VISION_NUM_PREDICT = "256"
     $env:OLLAMA_PLANNER_TEMPERATURE = "0.0"
     $env:OLLAMA_PLANNER_NUM_PREDICT = "512"
     $env:EXTERNAL_BROWSER_AGENT_MODEL = "qwen2.5:7b"
-    $env:EXTERNAL_BROWSER_AGENT_MAX_STEPS = "6"
-    $env:EXTERNAL_BROWSER_AGENT_STEP_TIMEOUT_S = "45"
+    $env:EXTERNAL_BROWSER_AGENT_MAX_STEPS = "4"
+    $env:EXTERNAL_BROWSER_AGENT_STEP_TIMEOUT_S = "15"
     $env:EXTERNAL_DESKTOP_AGENT_MODEL = "qwen2.5vl:3b"
     $env:EXTERNAL_DESKTOP_AGENT_MAX_LOOPS = "10"
     $env:EXTERNAL_DESKTOP_AGENT_TIMEOUT_S = "180"
@@ -144,11 +148,20 @@ function Set-OrchestratorEnvironment {
   $env:WAKEWORD_MANIFEST_PATH = "runtime/wakewords/manifest.json"
   $env:WAKEWORD_THRESHOLD = "0.5"
   $env:WAKEWORD_DEBOUNCE_SECONDS = "2.0"
+  $env:TTS_PROVIDER = "edge"
   $env:PYTHONUTF8 = "1"
 }
 
 Stop-OrchestratorProcesses -TargetPort $Port
 Set-OrchestratorEnvironment -SelectedMode $Mode
+
+$ttsWorkerScript = Join-Path $PSScriptRoot "start_tts_worker.ps1"
+if (Test-Path $ttsWorkerScript) {
+  & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $ttsWorkerScript -Port 8011 -Hidden -StartupTimeoutSec 120
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warning "TTS worker restart failed."
+  }
+}
 
 $uvicornArgs = @("-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "$Port", "--app-dir", "orchestrator")
 if ($Mode -eq "dev") {

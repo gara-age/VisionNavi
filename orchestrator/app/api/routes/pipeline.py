@@ -14,6 +14,8 @@ from app.models.requests import (
     AudioTranscriptionRequest,
     AudioTranscriptionResponse,
     CommandRequest,
+    GuidanceTtsRequest,
+    GuidanceTtsResponse,
     PopupSummaryHttpRequest,
     RunCommandRequest,
     WakeWordStartRequest,
@@ -23,6 +25,8 @@ from app.models.session import RunCommandResponse, SessionSnapshot
 from app.services.audio_diagnostics_service import AudioDiagnosticsService
 from app.services.audio_transcription_service import AudioTranscriptionService
 from app.services.command_normalizer import CommandNormalizer
+from app.services.command_constraint_service import CommandConstraintService
+from app.services.guidance_tts_service import GuidanceTtsService
 from app.services.intent_router import IntentRouter
 from app.services.map_route_parser import detect_map_provider
 from app.services.model_client import RemoteModelClient
@@ -42,6 +46,8 @@ session_store = SessionStore()
 audio_transcription_service = AudioTranscriptionService(settings)
 wakeword_service = WakeWordService(settings)
 audio_diagnostics_service = AudioDiagnosticsService()
+command_constraint_service = CommandConstraintService()
+guidance_tts_service = GuidanceTtsService(settings)
 
 
 def build_canonical_command(request: CommandRequest) -> CanonicalCommand:
@@ -68,30 +74,50 @@ def build_canonical_command_with_trace(request: CommandRequest) -> tuple[Canonic
         risk_level=risk_level,
         normalized_text=normalized_text,
     )
+    constraint_result = command_constraint_service.build_constraints(
+        raw_text=request.text,
+        normalized_text=normalized_text,
+        preferred_language=request.preferred_language,
+        task_domain=task_domain,
+        intent=intent,
+        target_app=target_app,
+    )
 
     command = CanonicalCommand(
         input_mode=request.input_mode,
         raw_text=request.text,
         normalized_text=normalized_text,
+        preferred_language=request.preferred_language,
         task_domain=task_domain,
         intent=intent,
         risk_level=risk_level,
         requires_confirmation=requires_confirmation,
         target_app=target_app,
         notes=notes,
+        constraints=constraint_result.constraints,
+    )
+    repaired_command, validation = command_constraint_service.validate_and_repair(
+        command,
+        allow_repair=settings.command_constraint_repair_enabled,
+        max_repairs=settings.command_constraint_max_repairs,
     )
     trace = {
         "raw_text": request.text,
         "normalized_text": normalized_text,
         "routing": route_trace,
         "harmonization": harmonize_trace,
+        "constraint_trace": {
+            "extracted": constraint_result.trace,
+            "repaired": validation.repaired_command,
+            "validation": validation.model_dump(),
+        },
         "risk": {
             "risk_level": risk_level,
             "requires_confirmation": requires_confirmation,
         },
-        "final_command": command.model_dump(),
+        "final_command": repaired_command.model_dump(),
     }
-    return command, trace
+    return repaired_command, trace
 
 
 def _route_command(
@@ -99,6 +125,8 @@ def _route_command(
     normalized_text: str,
 ) -> tuple[str, str, str | None, list[str], dict[str, object]]:
     notes: list[str] = []
+    signal = _detect_command_signal(normalized_text)
+    rule_task_domain, rule_intent, rule_target_app = router_service.route(normalized_text)
     trace: dict[str, object] = {
         "request": {
             "input_mode": request.input_mode,
@@ -106,7 +134,23 @@ def _route_command(
             "normalized_text_candidate": normalized_text,
         },
         "path": "rule_based_fallback",
+        "signal": signal,
+        "rule_preview": {
+            "task_domain": rule_task_domain,
+            "intent": rule_intent,
+            "target_app": rule_target_app,
+        },
     }
+
+    if rule_intent != "general_assistance" or _should_skip_llm_canonicalization(normalized_text, signal):
+        notes.append("rule_fast_path")
+        trace["path"] = "rule_fast_path"
+        trace["rule_based_response"] = {
+            "task_domain": rule_task_domain,
+            "intent": rule_intent,
+            "target_app": rule_target_app,
+        }
+        return (rule_task_domain, rule_intent, rule_target_app, notes, trace)
 
     try:
         trace["llm_debug"] = model_client.build_canonicalization_debug_payload(
@@ -114,6 +158,7 @@ def _route_command(
                 input_mode=request.input_mode,
                 raw_text=request.text,
                 normalized_text=normalized_text,
+                preferred_language=request.preferred_language,
             )
         )
         prediction = model_client.predict_canonical_command(
@@ -121,6 +166,7 @@ def _route_command(
                 input_mode=request.input_mode,
                 raw_text=request.text,
                 normalized_text=normalized_text,
+                preferred_language=request.preferred_language,
             )
         )
     except Exception as exc:
@@ -140,14 +186,36 @@ def _route_command(
             trace,
         )
 
-    task_domain, intent, target_app = router_service.route(normalized_text)
     notes.append("rule_based_fallback")
     trace["rule_based_response"] = {
-        "task_domain": task_domain,
-        "intent": intent,
-        "target_app": target_app,
+        "task_domain": rule_task_domain,
+        "intent": rule_intent,
+        "target_app": rule_target_app,
     }
-    return (task_domain, intent, target_app, notes, trace)
+    return (rule_task_domain, rule_intent, rule_target_app, notes, trace)
+
+
+def _should_skip_llm_canonicalization(normalized_text: str, signal: str | None) -> bool:
+    text = normalized_text.lower().strip()
+    if not text:
+        return True
+    if signal in {"web_search", "map_route", "local_lookup"}:
+        return True
+    if any(
+        marker in text
+        for marker in (
+            "notepad",
+            "dark mode",
+            "메모장",
+            "다크 모드",
+            "파일 탐색기",
+            "workspace",
+            "folder",
+            "file explorer",
+        )
+    ):
+        return True
+    return False
 
 
 def _harmonize_command_route(
@@ -329,6 +397,19 @@ def canonicalize_command(request: CommandRequest) -> CanonicalCommand:
 async def run_command(request: RunCommandRequest) -> RunCommandResponse:
     if request.canonical_command is not None:
         command = request.canonical_command
+        if command.constraints is None:
+            command = command.model_copy(
+                update={
+                    "constraints": command_constraint_service.build_constraints(
+                        raw_text=command.raw_text,
+                        normalized_text=command.normalized_text,
+                        preferred_language=command.preferred_language,
+                        task_domain=command.task_domain,
+                        intent=command.intent,
+                        target_app=command.target_app,
+                    ).constraints
+                }
+            )
         command_trace = {
             "source": "client_supplied_canonical_command",
             "final_command": command.model_dump(),
@@ -338,6 +419,7 @@ async def run_command(request: RunCommandRequest) -> RunCommandResponse:
             CommandRequest(
                 input_mode=request.input_mode or "text",
                 text=request.text,
+                preferred_language=request.preferred_language,
             )
         )
     else:
@@ -394,7 +476,7 @@ def transcribe_audio(request: AudioTranscriptionRequest) -> AudioTranscriptionRe
 
     text = payload["text"]
     if not text:
-        raise HTTPException(status_code=422, detail="Audio transcription produced no text")
+        return AudioTranscriptionResponse(**payload)
 
     return AudioTranscriptionResponse(**payload)
 
@@ -406,13 +488,7 @@ def get_wakeword_status() -> WakeWordStatusResponse:
 
 @router.get("/audio-diagnostics", response_model=AudioDiagnosticsResponse)
 def get_audio_diagnostics() -> AudioDiagnosticsResponse:
-    try:
-        payload = audio_diagnostics_service.collect()
-    except Exception as exc:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Audio diagnostics failed: {type(exc).__name__}: {exc}",
-        ) from exc
+    payload = audio_diagnostics_service.collect()
     return AudioDiagnosticsResponse(**payload)
 
 
@@ -467,6 +543,26 @@ def generate_popup_summary(request: PopupSummaryHttpRequest) -> PopupSummaryResp
     if response is None:
         raise HTTPException(status_code=503, detail="Popup summary model is not enabled")
     return response
+
+
+@router.post("/speak-guidance", response_model=GuidanceTtsResponse)
+async def speak_guidance(request: GuidanceTtsRequest) -> GuidanceTtsResponse:
+    result = guidance_tts_service.speak(
+        text=request.text,
+        language=request.language,
+        provider=request.provider,
+        voice=request.voice,
+        speed=request.speed,
+        volume=request.volume,
+    )
+    return GuidanceTtsResponse(
+        ok=result.ok,
+        provider=result.provider,
+        voice=result.voice,
+        device=result.device,
+        audio_path=result.audio_path,
+        detail=result.detail,
+    )
 
 
 @router.get("/sessions/{session_id}", response_model=SessionSnapshot)

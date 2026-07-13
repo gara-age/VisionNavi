@@ -10,6 +10,7 @@ function Resolve-OrchestratorVenvRoot {
   }
 
   $candidates += @(
+    "D:\VisionNaviRuntime\orchestrator-venv-new",
     "D:\VisionNaviRuntime\orchestrator-venv",
     (Join-Path $ProjectRoot "orchestrator\.venv")
   )

@@ -22,7 +22,11 @@ class Settings:
     model_api_timeout_s: float = 15.0
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = "qwen2.5:14b"
+    ollama_model_ko: str = "exaone3.5:7.8b"
+    ollama_model_ja: str = "dsasai/llama3-elyza-jp-8b"
     ollama_planner_model: str = "qwen2.5:7b"
+    ollama_planner_model_ko: str = "exaone3.5:7.8b"
+    ollama_planner_model_ja: str = "dsasai/llama3-elyza-jp-8b"
     ollama_vision_model: str = "qwen2.5vl:3b"
     ollama_vision_enabled: bool = False
     ollama_vision_num_predict: int = 256
@@ -33,10 +37,15 @@ class Settings:
     default_browser_execution_backend: ExecutionBackend = "external_browser_agent"
     default_desktop_execution_backend: ExecutionBackend = "external_desktop_agent"
     external_agent_fallback_to_internal: bool = True
+    command_constraint_validation_enabled: bool = True
+    command_constraint_repair_enabled: bool = True
+    command_constraint_max_repairs: int = 1
+    external_browser_cross_provider_fallback_allowed: bool = False
+    constraint_enforced_intents: tuple[str, ...] = ("search_and_read", "find_map_route")
     external_browser_agent_model: str = "qwen2.5:7b"
     external_browser_agent_use_vision: bool = False
-    external_browser_agent_max_steps: int = 6
-    external_browser_agent_step_timeout_s: int = 45
+    external_browser_agent_max_steps: int = 4
+    external_browser_agent_step_timeout_s: int = 15
     external_desktop_agent_base_url: str = "http://127.0.0.1:11434/v1"
     external_desktop_agent_api_key: str = "ollama"
     external_desktop_agent_model: str = "qwen2.5vl:3b"
@@ -55,6 +64,12 @@ class Settings:
     wakeword_manifest_path: str = "runtime/wakewords/manifest.json"
     wakeword_threshold: float = 0.5
     wakeword_debounce_seconds: float = 2.0
+    wakeword_required_consecutive_hits: int = 2
+    tts_provider: str = "edge"
+    tts_enabled: bool = True
+    tts_output_dir: str = "runtime/tts_output"
+    tts_edge_voice_ko: str = "ko-KR-SunHiNeural"
+    tts_edge_voice_ja: str = "ja-JP-NanamiNeural"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -75,7 +90,11 @@ class Settings:
             model_api_timeout_s=float(os.getenv("MODEL_API_TIMEOUT_S", "15")),
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
             ollama_model=os.getenv("OLLAMA_MODEL", "qwen2.5:14b"),
+            ollama_model_ko=os.getenv("OLLAMA_MODEL_KO", "exaone3.5:7.8b"),
+            ollama_model_ja=os.getenv("OLLAMA_MODEL_JA", "dsasai/llama3-elyza-jp-8b"),
             ollama_planner_model=os.getenv("OLLAMA_PLANNER_MODEL", "qwen2.5:7b"),
+            ollama_planner_model_ko=os.getenv("OLLAMA_PLANNER_MODEL_KO", "exaone3.5:7.8b"),
+            ollama_planner_model_ja=os.getenv("OLLAMA_PLANNER_MODEL_JA", "dsasai/llama3-elyza-jp-8b"),
             ollama_vision_model=os.getenv("OLLAMA_VISION_MODEL", "qwen2.5vl:3b"),
             ollama_vision_enabled=os.getenv("OLLAMA_VISION_ENABLED", "false").lower() == "true",
             ollama_vision_num_predict=int(os.getenv("OLLAMA_VISION_NUM_PREDICT", "256")),
@@ -86,10 +105,19 @@ class Settings:
             default_browser_execution_backend=os.getenv("DEFAULT_BROWSER_EXECUTION_BACKEND", "external_browser_agent"),  # type: ignore[arg-type]
             default_desktop_execution_backend=os.getenv("DEFAULT_DESKTOP_EXECUTION_BACKEND", "external_desktop_agent"),  # type: ignore[arg-type]
             external_agent_fallback_to_internal=os.getenv("EXTERNAL_AGENT_FALLBACK_TO_INTERNAL", "true").lower() == "true",
+            command_constraint_validation_enabled=os.getenv("COMMAND_CONSTRAINT_VALIDATION_ENABLED", "true").lower() == "true",
+            command_constraint_repair_enabled=os.getenv("COMMAND_CONSTRAINT_REPAIR_ENABLED", "true").lower() == "true",
+            command_constraint_max_repairs=int(os.getenv("COMMAND_CONSTRAINT_MAX_REPAIRS", "1")),
+            external_browser_cross_provider_fallback_allowed=os.getenv("EXTERNAL_BROWSER_CROSS_PROVIDER_FALLBACK_ALLOWED", "false").lower() == "true",
+            constraint_enforced_intents=tuple(
+                item.strip()
+                for item in os.getenv("CONSTRAINT_ENFORCED_INTENTS", "search_and_read,find_map_route").split(",")
+                if item.strip()
+            ),
             external_browser_agent_model=os.getenv("EXTERNAL_BROWSER_AGENT_MODEL", "qwen2.5:7b"),
             external_browser_agent_use_vision=os.getenv("EXTERNAL_BROWSER_AGENT_USE_VISION", "false").lower() == "true",
-            external_browser_agent_max_steps=int(os.getenv("EXTERNAL_BROWSER_AGENT_MAX_STEPS", "6")),
-            external_browser_agent_step_timeout_s=int(os.getenv("EXTERNAL_BROWSER_AGENT_STEP_TIMEOUT_S", "45")),
+            external_browser_agent_max_steps=int(os.getenv("EXTERNAL_BROWSER_AGENT_MAX_STEPS", "4")),
+            external_browser_agent_step_timeout_s=int(os.getenv("EXTERNAL_BROWSER_AGENT_STEP_TIMEOUT_S", "15")),
             external_desktop_agent_base_url=os.getenv("EXTERNAL_DESKTOP_AGENT_BASE_URL", "http://127.0.0.1:11434/v1"),
             external_desktop_agent_api_key=os.getenv("EXTERNAL_DESKTOP_AGENT_API_KEY", "ollama"),
             external_desktop_agent_model=os.getenv("EXTERNAL_DESKTOP_AGENT_MODEL", "qwen2.5vl:3b"),
@@ -108,4 +136,13 @@ class Settings:
             wakeword_manifest_path=os.getenv("WAKEWORD_MANIFEST_PATH", "runtime/wakewords/manifest.json"),
             wakeword_threshold=float(os.getenv("WAKEWORD_THRESHOLD", "0.5")),
             wakeword_debounce_seconds=float(os.getenv("WAKEWORD_DEBOUNCE_SECONDS", "2.0")),
+            wakeword_required_consecutive_hits=max(
+                1,
+                int(os.getenv("WAKEWORD_REQUIRED_CONSECUTIVE_HITS", "2")),
+            ),
+            tts_provider=os.getenv("TTS_PROVIDER", "edge").lower(),
+            tts_enabled=os.getenv("TTS_ENABLED", "true").lower() == "true",
+            tts_output_dir=os.getenv("TTS_OUTPUT_DIR", "runtime/tts_output"),
+            tts_edge_voice_ko=os.getenv("TTS_EDGE_VOICE_KO", "ko-KR-SunHiNeural"),
+            tts_edge_voice_ja=os.getenv("TTS_EDGE_VOICE_JA", "ja-JP-NanamiNeural"),
         )

@@ -9,3 +9,4 @@ pytest>=8.2,<9.0
 browser-use[core]>=0.13,<0.14
 faster-whisper>=1.1,<2.0
 livekit-wakeword[listener]
+edge-tts>=6.1,<7.0

@@ -9,11 +9,13 @@ from app.models.execution_backend import ExecutionBackend
 class CommandRequest(BaseModel):
     input_mode: Literal["voice", "text"] = "text"
     text: str = Field(min_length=1)
+    preferred_language: Literal["ko", "ja", "en", "unknown"] | None = None
 
 
 class RunCommandRequest(BaseModel):
     input_mode: Literal["voice", "text"] | None = "text"
     text: str | None = None
+    preferred_language: Literal["ko", "ja", "en", "unknown"] | None = None
     canonical_command: CanonicalCommand | None = None
     confirmed: bool = False
     execution_backend: ExecutionBackend | None = None
@@ -26,6 +28,7 @@ class AudioTranscriptionRequest(BaseModel):
 
 class AudioTranscriptionResponse(BaseModel):
     text: str
+    normalized_text: str
     detected_language: str | None = None
     language_probability: float | None = None
     duration_seconds: float | None = None
@@ -81,9 +84,28 @@ class AudioDiagnosticsResponse(BaseModel):
     platform: str = "windows"
     input_endpoints: list[AudioDiagnosticEndpoint] = Field(default_factory=list)
     summary: AudioDiagnosticsSummary = Field(default_factory=AudioDiagnosticsSummary)
+    error: str | None = None
 
 
 class PopupSummaryHttpRequest(BaseModel):
     command: CanonicalCommand
     language: Literal["ko", "ja"] = "ko"
     result: dict[str, object] = Field(default_factory=dict)
+
+
+class GuidanceTtsRequest(BaseModel):
+    text: str = Field(min_length=1)
+    language: Literal["ko", "ja"] = "ko"
+    provider: Literal["edge"] | None = None
+    voice: str | None = None
+    speed: float = Field(default=1.0, ge=0.7, le=1.3)
+    volume: float = Field(default=1.0, ge=0.7, le=1.3)
+
+
+class GuidanceTtsResponse(BaseModel):
+    ok: bool = False
+    provider: str = "edge"
+    voice: str | None = None
+    device: str | None = None
+    audio_path: str | None = None
+    detail: str | None = None

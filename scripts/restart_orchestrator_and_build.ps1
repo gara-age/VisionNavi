@@ -10,7 +10,7 @@ $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Resolve-Path (Join-Path $scriptDir "..")
 $frontendDir = Join-Path $projectRoot "frontend"
-$restartScript = Join-Path $scriptDir "restart_orchestrator.ps1"
+$restartScript = Join-Path $scriptDir "restart_all_backends.ps1"
 
 if (-not (Test-Path $restartScript)) {
   Write-Error "Missing restart script: $restartScript"
@@ -23,7 +23,7 @@ if (-not (Test-Path $frontendDir)) {
 }
 
 Write-Host "== VisionNavi orchestrator restart =="
-& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $restartScript -Mode $Mode -Port $Port
+& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $restartScript -Mode $Mode -OrchestratorPort $Port
 if ($LASTEXITCODE -ne 0) {
   Write-Error "Failed to restart orchestrator."
   exit $LASTEXITCODE
