@@ -13,8 +13,8 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectRoot = Resolve-Path (Join-Path $scriptDir "..")
 Set-Location $projectRoot
 
-. "$scriptDir\resolve_orchestrator_python.ps1"
-$venvRoot = Resolve-OrchestratorVenvRoot -ProjectRoot $projectRoot
+. "$scriptDir\resolve_wakeword_python.ps1"
+$venvRoot = Resolve-WakewordVenvRoot -ProjectRoot $projectRoot
 $pythonExe = if ($venvRoot) { Join-Path $venvRoot "Scripts\python.exe" } else { $null }
 $cliBootstrap = "from livekit.wakeword.cli import app; app()"
 $wakewordRoot = "D:\VisionNaviWakeword"
@@ -22,8 +22,17 @@ $tempRoot = Join-Path $wakewordRoot "temp"
 $pipCacheRoot = Join-Path $wakewordRoot "pip-cache"
 
 if (-not (Test-Path $pythonExe)) {
-  Write-Error "Missing orchestrator wakeword environment. Run scripts/setup_orchestrator_env.ps1 first."
-  exit 1
+  Write-Host "Wakeword environment is missing. Bootstrapping it now..."
+  & "$scriptDir\setup_wakeword_env.ps1"
+  if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+  }
+  $venvRoot = Resolve-WakewordVenvRoot -ProjectRoot $projectRoot
+  $pythonExe = if ($venvRoot) { Join-Path $venvRoot "Scripts\python.exe" } else { $null }
+  if (-not (Test-Path $pythonExe)) {
+    Write-Error "Missing wakeword training environment even after bootstrap."
+    exit 1
+  }
 }
 
 $resolvedConfig = Resolve-Path $ConfigPath
@@ -50,7 +59,45 @@ if (-not $outputDirMatch.Success) {
 
 $outputRoot = $outputDirMatch.Groups[1].Value.Trim()
 $runtimeModelDir = Join-Path $projectRoot "runtime/wakewords/models"
+$runtimeManifestPath = Join-Path $projectRoot "runtime/wakewords/manifest.json"
 New-Item -ItemType Directory -Path $runtimeModelDir -Force | Out-Null
+
+function Update-WakewordManifestProfileModelPath {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$ManifestPath,
+    [Parameter(Mandatory = $true)]
+    [string]$ProfileId,
+    [Parameter(Mandatory = $true)]
+    [string]$ModelPath
+  )
+
+  if (-not (Test-Path $ManifestPath)) {
+    Write-Warning "Wakeword manifest not found: $ManifestPath"
+    return
+  }
+
+  $manifest = Get-Content $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  if (-not $manifest.profiles) {
+    Write-Warning "Wakeword manifest has no profiles: $ManifestPath"
+    return
+  }
+
+  $profile = $manifest.profiles | Where-Object { $_.id -eq $ProfileId } | Select-Object -First 1
+  if (-not $profile) {
+    Write-Warning "Wakeword profile '$ProfileId' was not found in manifest."
+    return
+  }
+
+  $profile.model_path = $ModelPath.Replace('\', '/')
+  $manifestJson = $manifest | ConvertTo-Json -Depth 8
+  $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($ManifestPath, $manifestJson, $utf8NoBom)
+
+  Write-Host ""
+  Write-Host "== Wakeword manifest synced =="
+  Write-Host "$ProfileId -> $($profile.model_path)"
+}
 
 if ($modelName -like "ja_*" -or $modelName -eq "ko_hey_nabi") {
   $env:VISIONNAVI_VOXCPM_DEVICE = "cpu"
@@ -99,6 +146,11 @@ if (Test-Path $exportedOnnxPath) {
   Write-Host ""
   Write-Host "== Runtime model synced =="
   Write-Host $runtimeOnnxPath
+  $relativeRuntimeModelPath = "runtime/wakewords/models/$modelName.onnx"
+  Update-WakewordManifestProfileModelPath `
+    -ManifestPath $runtimeManifestPath `
+    -ProfileId $modelName `
+    -ModelPath $relativeRuntimeModelPath
 }
 
 Write-Host ""

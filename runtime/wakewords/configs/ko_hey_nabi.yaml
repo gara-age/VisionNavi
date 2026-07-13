@@ -2,10 +2,7 @@ model_name: ko_hey_nabi
 target_phrases:
   - "\uD5E4\uC774 \uB098\uBE44"
 tts_backend: voxcpm
-n_samples: 320
-n_samples_val: 80
-n_background_samples: 24
-n_background_samples_val: 8
+n_samples: 5000
 tts_batch_size: 4
 data_dir: "D:/VisionNaviWakeword/data"
 output_dir: "D:/VisionNaviWakeword/output"
@@ -17,7 +14,7 @@ augmentation:
     - "D:/VisionNaviWakeword/data/backgrounds"
   rir_paths:
     - "D:/VisionNaviWakeword/data/rirs"
-steps: 2000
+steps: 30000
 target_fp_per_hour: 0.2
 batch_n_per_class:
   positive: 4

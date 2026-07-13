@@ -6,11 +6,13 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from app.core.settings import Settings
+from app.services.command_normalizer import CommandNormalizer
 
 
 class AudioTranscriptionService:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+        self._normalizer = CommandNormalizer()
         self._model: Any | None = None
         self._model_runtime: tuple[str, str] | None = None
         self._lock = threading.Lock()
@@ -42,8 +44,15 @@ class AudioTranscriptionService:
                 float(getattr(segment, "end", 0.0) or 0.0),
             )
 
+        raw_text = " ".join(text_parts).strip()
+        normalized_text = self._normalizer.normalize_transcript(
+            raw_text,
+            language_hint=normalized_language or getattr(info, "language", None),
+        )
+
         return {
-            "text": " ".join(text_parts).strip(),
+            "text": raw_text,
+            "normalized_text": normalized_text,
             "detected_language": getattr(info, "language", None),
             "language_probability": getattr(info, "language_probability", None),
             "duration_seconds": duration_seconds or None,

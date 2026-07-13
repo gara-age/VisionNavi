@@ -3,26 +3,26 @@
     {
       "id": "ko_nabiya",
       "language": "ko",
-      "phrase": "나비야",
+      "phrase": "\ub098\ube44\uc57c",
       "model_path": "runtime/wakewords/models/ko_nabiya.onnx"
     },
     {
       "id": "ko_hey_nabi",
       "language": "ko",
-      "phrase": "헤이 나비",
-      "model_path": "runtime/wakewords/models/ko_hey_nabi_dev.onnx"
+      "phrase": "\ud5e4\uc774 \ub098\ube44",
+      "model_path": "runtime/wakewords/models/ko_hey_nabi.onnx"
     },
     {
       "id": "ja_nee_navi",
       "language": "ja",
-      "phrase": "ねえ、ナビ",
-      "model_path": "runtime/wakewords/models/ja_nee_navi_dev.onnx"
+      "phrase": "\u306d\u3048\u3001\u30ca\u30d3",
+      "model_path": "runtime/wakewords/models/ja_nee_navi.onnx"
     },
     {
       "id": "ja_navisan",
       "language": "ja",
-      "phrase": "ナビさん",
-      "model_path": "runtime/wakewords/models/ja_navisan_dev.onnx"
+      "phrase": "\u30ca\u30d3\u3055\u3093",
+      "model_path": "runtime/wakewords/models/ja_navisan.onnx"
     }
   ]
 }

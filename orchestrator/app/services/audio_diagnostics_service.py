@@ -7,11 +7,17 @@ from typing import Any
 
 class AudioDiagnosticsService:
     def collect(self) -> dict[str, Any]:
-        endpoints = self._query_audio_endpoints()
+        error: str | None = None
+        try:
+            endpoints = self._query_audio_endpoints()
+        except Exception as exc:
+            endpoints = []
+            error = f"{type(exc).__name__}: {exc}"
         return {
             "platform": "windows",
             "input_endpoints": endpoints,
             "summary": self._summarize(endpoints),
+            "error": error,
         }
 
     def _query_audio_endpoints(self) -> list[dict[str, str]]:

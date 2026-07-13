@@ -109,6 +109,39 @@ def test_resolve_profile_by_profile_id(tmp_path: Path) -> None:
     assert profile.phrase == "헤이 나비"
 
 
+def test_prefers_prod_model_when_manifest_points_to_dev(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    prod_model = tmp_path / "ja_nee_navi.onnx"
+    dev_model = tmp_path / "ja_nee_navi_dev.onnx"
+    prod_model.write_bytes(b"prod")
+    dev_model.write_bytes(b"dev")
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "profiles": [
+                    {
+                        "id": "ja_nee_navi",
+                        "language": "ja",
+                        "phrase": "ねえ、ナビ",
+                        "model_path": str(dev_model),
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    service = WakeWordService(
+        Settings(
+            wakeword_manifest_path=str(manifest_path),
+        )
+    )
+    profile = service._resolve_profile(language="ja", phrase=None, profile_id="ja_nee_navi")
+
+    assert service._model_path(profile) == prod_model
+
+
 def test_missing_manifest_raises(tmp_path: Path) -> None:
     service = WakeWordService(
         Settings(
@@ -118,3 +151,29 @@ def test_missing_manifest_raises(tmp_path: Path) -> None:
 
     with pytest.raises(FileNotFoundError):
         service._load_profiles()
+
+
+def test_load_profiles_accepts_utf8_bom_manifest(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    manifest = {
+        "profiles": [
+            {
+                "id": "ko_hey_nabi",
+                "language": "ko",
+                "phrase": "hey nabi",
+                "model_path": str(tmp_path / "ko_hey_nabi.onnx"),
+            }
+        ]
+    }
+    manifest_path.write_bytes(
+        b"\xef\xbb\xbf" + json.dumps(manifest, ensure_ascii=False).encode("utf-8")
+    )
+    service = WakeWordService(
+        Settings(
+            wakeword_manifest_path=str(manifest_path),
+        )
+    )
+
+    profiles = service._load_profiles()
+
+    assert profiles[0].profile_id == "ko_hey_nabi"

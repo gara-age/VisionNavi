@@ -142,7 +142,9 @@ class WakeWordService:
                 f"Wakeword manifest not found: {manifest_path}. "
                 "Create runtime/wakewords/manifest.json from the example manifest."
             )
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        # PowerShell 5.x may write JSON files with an UTF-8 BOM. Accept it so
+        # wakeword startup is not broken by the manifest writer.
+        payload = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
         profiles_raw = payload.get("profiles", [])
         profiles: list[WakeWordProfile] = []
         for item in profiles_raw:
@@ -187,7 +189,22 @@ class WakeWordService:
     def _model_path(self, profile: WakeWordProfile | None) -> Path:
         if profile is None:
             return Path()
-        return Path(profile.model_path).expanduser()
+        configured = Path(profile.model_path).expanduser()
+        candidates = [configured]
+
+        stem = configured.stem
+        suffix = configured.suffix
+        if stem.endswith("_dev"):
+            prod_candidate = configured.with_name(f"{stem[:-4]}{suffix}")
+            candidates = [prod_candidate, configured]
+        else:
+            dev_candidate = configured.with_name(f"{stem}_dev{suffix}")
+            candidates.append(dev_candidate)
+
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return configured
 
     def _is_backend_available(self) -> bool:
         if self._available is not None:
@@ -213,6 +230,31 @@ class WakeWordService:
             for token in (
                 "원격 오디오",
                 "remote audio",
+            )
+        )
+
+    def _looks_like_generic_input_router(self, name: str) -> bool:
+        normalized = name.lower()
+        return any(
+            token in normalized
+            for token in (
+                "microsoft sound mapper",
+                "primary sound capture driver",
+                "stereo mix",
+            )
+        )
+
+    def _looks_like_real_microphone(self, name: str) -> bool:
+        normalized = name.lower()
+        return any(
+            token in normalized
+            for token in (
+                "microphone",
+                "mic",
+                "headset",
+                "hands-free",
+                "usb",
+                "bluetooth",
             )
         )
 
@@ -242,7 +284,10 @@ class WakeWordService:
             if default_info is not None:
                 default_name = str(default_info.get("name", ""))
                 default_index = int(default_info.get("index", 0))
-                if not self._looks_like_remote_audio(default_name):
+                if (
+                    not self._looks_like_remote_audio(default_name)
+                    and not self._looks_like_generic_input_router(default_name)
+                ):
                     return default_index, default_name
 
             if not devices:
@@ -277,6 +322,10 @@ class WakeWordService:
                 name = str(device["name"])
                 lowered = name.lower()
                 positive = 0
+                if self._looks_like_real_microphone(name):
+                    positive += 220
+                if self._looks_like_generic_input_router(name):
+                    positive -= 180
                 if any(
                     token in lowered
                     for token in (
@@ -326,6 +375,7 @@ class WakeWordService:
         stream = None
         executor: concurrent.futures.ThreadPoolExecutor | None = None
         frame_buffer: deque[np.ndarray] = deque(maxlen=chunk_frames)
+        consecutive_hits = 0
 
         try:
             pa = pyaudio.PyAudio()
@@ -359,10 +409,20 @@ class WakeWordService:
                 self._last_scores = {name: float(score) for name, score in scores.items()}
 
                 now = time.monotonic()
+                threshold = self._active_threshold()
+                detected = False
+                above_threshold = False
                 for _name, score in scores.items():
-                    if score < self._active_threshold():
+                    if score < threshold:
                         continue
+                    above_threshold = True
+                    consecutive_hits += 1
                     if now - last_detection_monotonic < self._settings.wakeword_debounce_seconds:
+                        continue
+                    if (
+                        consecutive_hits
+                        < self._settings.wakeword_required_consecutive_hits
+                    ):
                         continue
 
                     last_detection_monotonic = now
@@ -370,7 +430,13 @@ class WakeWordService:
                     self._pending_detection = True
                     self._pending_detection_phrase = profile.phrase
                     self._last_detection_at = datetime.now(UTC).isoformat()
+                    consecutive_hits = 0
+                    detected = True
                     break
+                if detected:
+                    continue
+                if not above_threshold:
+                    consecutive_hits = 0
         except asyncio.CancelledError:
             raise
         except Exception as exc:
