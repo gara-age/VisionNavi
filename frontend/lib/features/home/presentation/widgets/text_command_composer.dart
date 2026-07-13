@@ -19,18 +19,18 @@ class TextCommandComposer extends StatelessWidget {
       children: [
         TextField(
           controller: controller,
-          minLines: 3,
-          maxLines: 4,
+          minLines: 2,
+          maxLines: 3,
           onSubmitted: (_) => onSubmit(),
           decoration: const InputDecoration(
-            hintText: 'Type a command for search, Notepad, or dark mode.',
+            hintText: '어떤 도움이 필요한지 입력해보세요',
             border: OutlineInputBorder(),
           ),
         ),
         const SizedBox(height: 12),
         ElevatedButton(
           onPressed: isBusy ? null : onSubmit,
-          child: Text(isBusy ? 'Preparing...' : 'Run Command'),
+          child: Text(isBusy ? '처리 중' : '요청하기'),
         ),
       ],
     );

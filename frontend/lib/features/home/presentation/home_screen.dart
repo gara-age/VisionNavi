@@ -18,6 +18,7 @@ import '../models/home_user_settings.dart';
 import '../services/home_settings_store.dart';
 import '../../../models/session_models.dart';
 import '../../../services/orchestrator_client.dart';
+import '../../../services/result_tts_service.dart';
 import '../../../services/taskbar_popup_service.dart';
 import 'widgets/action_panel.dart';
 import 'widgets/home_settings_dialog.dart';
@@ -59,10 +60,12 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isRecordingFallback = false;
   bool _isWakeWordMonitoring = false;
   bool _isWakeWordLevelMonitoring = false;
+  bool _isPreparingWakeWordCapture = false;
   String? _speechMessage;
   String? _speechLocaleId;
   String? _attachedVoiceFilePath;
   String? _lastExecutionPopupKey;
+  String? _lastGuidanceFeedbackKey;
   StreamSubscription<Uint8List>? _liveAudioSubscription;
   StreamSubscription<Uint8List>? _wakeWordLevelSubscription;
   Timer? _liveTranscriptionTimer;
@@ -133,9 +136,20 @@ class _HomeScreenState extends State<HomeScreen> {
       _phase = 'canonicalize';
       _speechMessage = _commandProgressMessage(text);
     });
+    unawaited(
+      _showGuidanceFeedback(
+        key: 'understanding|$text',
+        title: _ux('명령을 이해하고 있어요', '命令を理解しています'),
+        message: _commandProgressMessage(text),
+        state: TaskbarPopupState.processing,
+      ),
+    );
 
     try {
-      final command = await _client.canonicalizeCommand(text);
+      final command = await _client.canonicalizeCommand(
+        text,
+        preferredLanguage: _preferredLanguageCode(),
+      );
       if (!mounted) {
         return;
       }
@@ -181,7 +195,24 @@ class _HomeScreenState extends State<HomeScreen> {
       _sessionMetadata = const {};
       _status = 'Starting';
       _phase = 'queued';
+      _speechMessage = _ux(
+        '처리가 진행될 때까지 잠시만 기다려 주세요.',
+        '処理が終わるまで少しお待ちください。',
+      );
     });
+    final progressMessage = _commandProgressMessage(
+      command.normalizedText.trim().isNotEmpty
+          ? command.normalizedText
+          : command.rawText,
+    );
+    unawaited(
+      _showGuidanceFeedback(
+        key: 'executing|${command.normalizedText}|${command.intent}',
+        title: _ux('화면을 이동하고 있어요', '画面を移動しています'),
+        message: progressMessage,
+        state: TaskbarPopupState.processing,
+      ),
+    );
 
     try {
       final response = await _client.runCanonicalCommand(
@@ -347,9 +378,12 @@ class _HomeScreenState extends State<HomeScreen> {
         !_isWakeWordMonitoring &&
         !_isRecordingFallback &&
         !_isListening &&
+        !_isPreparingWakeWordCapture &&
         !_speechBusy &&
         !_isSubmitting &&
-        !_isCanonicalizing;
+        !_isCanonicalizing &&
+        !_isExecutionInProgress() &&
+        !_isUnderstandingInProgress();
   }
 
   void _queueWakeWordRearm([Duration delay = const Duration(seconds: 1)]) {
@@ -445,6 +479,7 @@ class _HomeScreenState extends State<HomeScreen> {
       message: message,
       state: state,
       themeMode: themeMode,
+      speak: true,
     );
   }
 
@@ -569,6 +604,7 @@ class _HomeScreenState extends State<HomeScreen> {
     required String message,
     required TaskbarPopupState state,
     required TaskbarPopupThemeMode themeMode,
+    bool speak = false,
   }) async {
     final shown = await TaskbarPopupService.instance.show(
       title: title,
@@ -581,6 +617,37 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!shown && mounted) {
       _showSnackBar('$title\n$message');
     }
+    if (speak) {
+      await ResultTtsService.instance.speak(
+        text: message,
+        language: _preferredLanguageCode(),
+        speed: _userSettings.guidanceSpeed,
+        volume: _userSettings.guidanceVolume,
+        voice: _ttsVoiceForLanguage(
+          _userSettings,
+          _preferredLanguageCode(),
+        ),
+      );
+    }
+  }
+
+  Future<void> _showGuidanceFeedback({
+    required String key,
+    required String title,
+    required String message,
+    required TaskbarPopupState state,
+  }) async {
+    if (_lastGuidanceFeedbackKey == key) {
+      return;
+    }
+    _lastGuidanceFeedbackKey = key;
+    await _showExecutionPopup(
+      title: title,
+      message: message,
+      state: state,
+      themeMode: _currentPopupThemeMode(),
+      speak: true,
+    );
   }
 
   TaskbarPopupThemeMode _currentPopupThemeMode() {
@@ -602,6 +669,7 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       state: TaskbarPopupState.processing,
       themeMode: _currentPopupThemeMode(),
+      speak: true,
     );
   }
 
@@ -761,7 +829,10 @@ class _HomeScreenState extends State<HomeScreen> {
       barrierDismissible: true,
       builder: (dialogContext) => Theme(
         data: scopedTheme,
-        child: HomeSettingsDialog(initialSettings: _userSettings),
+        child: HomeSettingsDialog(
+          initialSettings: _userSettings,
+          onTestGuidanceTts: _testGuidanceTts,
+        ),
       ),
     );
     if (!mounted || next == null) {
@@ -777,6 +848,27 @@ class _HomeScreenState extends State<HomeScreen> {
     await _syncWakeWordMonitoring(
       previousEnabled: wasWakeWordEnabled,
       currentEnabled: enforced.wakeWordEnabled,
+    );
+  }
+
+  Future<void> _testGuidanceTts(
+    HomeUserSettings settings,
+    String language,
+    String provider,
+  ) async {
+    final normalizedLanguage = _normalizePreferredLanguage(language);
+    final text = normalizedLanguage == 'ja'
+        ? '\u3053\u3093\u306b\u3061\u306f\u3002VisionNavi\u306e\u65e5\u672c\u8a9e\u97f3\u58f0\u30c6\u30b9\u30c8\u3067\u3059\u3002'
+        : '\uc548\ub155\ud558\uc138\uc694. VisionNavi \ud55c\uad6d\uc5b4 \uc74c\uc131 \ud14c\uc2a4\ud2b8\uc785\ub2c8\ub2e4.';
+    await ResultTtsService.instance.speak(
+      text: text,
+      language: normalizedLanguage,
+      speed: settings.guidanceSpeed,
+      volume: settings.guidanceVolume,
+      provider: provider,
+      voice: provider == 'edge'
+          ? _ttsVoiceForLanguage(settings, normalizedLanguage)
+          : null,
     );
   }
 
@@ -877,6 +969,16 @@ class _HomeScreenState extends State<HomeScreen> {
     return _normalizePreferredLanguage(_userSettings.preferredLanguage);
   }
 
+  String? _ttsVoiceForLanguage(HomeUserSettings settings, String language) {
+    final normalized = _normalizePreferredLanguage(language);
+    if (normalized == 'ja') {
+      final voice = settings.ttsVoiceJa.trim();
+      return voice.isEmpty ? null : voice;
+    }
+    final voice = settings.ttsVoiceKo.trim();
+    return voice.isEmpty ? null : voice;
+  }
+
   String _normalizePreferredLanguage(String value) {
     final normalized = value.trim().toLowerCase();
     const japaneseAliases = <String>{
@@ -904,6 +1006,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return 'ko';
   }
 
+  // ignore: unused_element
   String _wakeWordProfileIdForCurrentSettings() {
     final language = _preferredLanguageCode();
     final phrase = _resolvedWakeWordPhraseForCurrentLanguage();
@@ -943,6 +1046,61 @@ class _HomeScreenState extends State<HomeScreen> {
     return '나비야';
   }
 
+  double _effectiveWakeWordThresholdForCurrentSettings() {
+    final configured = _userSettings.wakeWordThreshold;
+    final language = _preferredLanguageCode();
+    final profileId = _wakeWordProfileIdForCurrentSettingsSafe();
+
+    if (language == 'ja') {
+      if (profileId == 'ja_navisan') {
+        return configured.clamp(0.05, 0.07).toDouble();
+      }
+      if (profileId == 'ja_nee_navi') {
+        return configured.clamp(0.28, 0.38).toDouble();
+      }
+      return configured.clamp(0.28, 0.38).toDouble();
+    }
+
+    if (profileId == 'ko_hey_nabi') {
+      return configured.clamp(0.05, 0.07).toDouble();
+    }
+    return configured.clamp(0.24, 0.32).toDouble();
+  }
+
+  String _wakeWordProfileIdForCurrentSettingsSafe() {
+    final language = _preferredLanguageCode();
+    final phrase = _resolvedWakeWordPhraseForCurrentLanguageSafe();
+    if (language == 'ja') {
+      switch (phrase) {
+        case '\u30ca\u30d3\u3055\u3093':
+          return 'ja_navisan';
+        case '\u306d\u3048\u3001\u30ca\u30d3':
+        case '\u306d\u3048\u30ca\u30d3':
+        default:
+          return 'ja_nee_navi';
+      }
+    }
+    if (phrase == '\ud5e4\uc774 \ub098\ube44') {
+      return 'ko_hey_nabi';
+    }
+    return 'ko_nabiya';
+  }
+
+  String _resolvedWakeWordPhraseForCurrentLanguageSafe() {
+    final language = _preferredLanguageCode();
+    final phrase = _userSettings.wakeWordPhrase.trim();
+    if (language == 'ja') {
+      if (phrase == '\u30ca\u30d3\u3055\u3093') {
+        return phrase;
+      }
+      return '\u306d\u3048\u3001\u30ca\u30d3';
+    }
+    if (phrase == '\ud5e4\uc774 \ub098\ube44') {
+      return phrase;
+    }
+    return '\ub098\ube44\uc57c';
+  }
+
   String _ux(String ko, String ja) => _isJapanese ? ja : ko;
 
   bool _isUnderstandingInProgress() =>
@@ -960,7 +1118,10 @@ class _HomeScreenState extends State<HomeScreen> {
       _phase == 'recover';
 
   bool _isVoiceCaptureInProgress() =>
-      _speechBusy || _isListening || _isRecordingFallback;
+      _speechBusy ||
+      _isListening ||
+      _isRecordingFallback ||
+      _isPreparingWakeWordCapture;
 
   bool _canShowWakeWordIdleMessage() =>
       !_isUnderstandingInProgress() &&
@@ -970,6 +1131,9 @@ class _HomeScreenState extends State<HomeScreen> {
   String _voiceActionButtonLabel() {
     if (_isUnderstandingInProgress() || _isExecutionInProgress()) {
       return _ux('처리 중', '処理中');
+    }
+    if (_isPreparingWakeWordCapture) {
+      return _ux('준비 중', '準備中');
     }
     if (!_userSettings.voiceInputEnabled) {
       return _ux('사용 안 함', '未使用');
@@ -1127,6 +1291,11 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _startRecordedVoiceFallback() async {
+    if (mounted && _isPreparingWakeWordCapture) {
+      setState(() {
+        _isPreparingWakeWordCapture = false;
+      });
+    }
     if (_isWakeWordMonitoring) {
       await _stopWakeWordMonitoring(manual: false);
     }
@@ -1202,6 +1371,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _stopRecordedVoiceFallback() async {
+    var shouldRearmWakeWordAfterStop = true;
     setState(() {
       _speechBusy = true;
     });
@@ -1251,6 +1421,7 @@ class _HomeScreenState extends State<HomeScreen> {
         }
         return;
       }
+      shouldRearmWakeWordAfterStop = false;
     } finally {
       _liveAudioBytes = null;
       _liveAudioPeakLevel = 0;
@@ -1263,11 +1434,16 @@ class _HomeScreenState extends State<HomeScreen> {
           _speechBusy = false;
         });
       }
-      if (_userSettings.wakeWordEnabled &&
+      if (shouldRearmWakeWordAfterStop &&
+          _userSettings.wakeWordEnabled &&
           mounted &&
           !_isWakeWordMonitoring &&
           !_isRecordingFallback &&
-          !_speechBusy) {
+          !_speechBusy &&
+          !_isSubmitting &&
+          !_isCanonicalizing &&
+          !_isExecutionInProgress() &&
+          !_isUnderstandingInProgress()) {
         await _startWakeWordMonitoring(autoStarted: true);
       }
     }
@@ -1464,14 +1640,19 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_isWakeWordMonitoring ||
         _isRecordingFallback ||
         _isListening ||
-        _speechBusy) {
+        _isPreparingWakeWordCapture ||
+        _speechBusy ||
+        _isSubmitting ||
+        _isCanonicalizing ||
+        _isExecutionInProgress() ||
+        _isUnderstandingInProgress()) {
       return;
     }
     try {
       final status = await _client.startWakeWord(
         language: _preferredLanguageCode(),
-        profileId: _wakeWordProfileIdForCurrentSettings(),
-        threshold: _userSettings.wakeWordThreshold,
+        profileId: _wakeWordProfileIdForCurrentSettingsSafe(),
+        threshold: _effectiveWakeWordThresholdForCurrentSettings(),
       );
       _applyWakeWordStatus(
         status,
@@ -1580,13 +1761,23 @@ class _HomeScreenState extends State<HomeScreen> {
           return;
         }
         setState(() {
+          _isPreparingWakeWordCapture = true;
           _speechMessage = _ux(
             '호출어를 들었어요. 이제 말씀해 주세요.',
             '呼びかけを聞き取りました。続けて話してください。',
           );
         });
-        unawaited(_showWakeWordListeningPopup());
-        await _startRecordedVoiceFallback();
+        try {
+          await _showWakeWordListeningPopup();
+          await Future<void>.delayed(const Duration(milliseconds: 250));
+          await _startRecordedVoiceFallback();
+        } finally {
+          if (mounted && _isPreparingWakeWordCapture) {
+            setState(() {
+              _isPreparingWakeWordCapture = false;
+            });
+          }
+        }
       }
       if (!status.running) {
         _wakeWordStatusPollTimer?.cancel();
@@ -1622,7 +1813,12 @@ class _HomeScreenState extends State<HomeScreen> {
           '호출어 엔진 상태: ${status.lastError}',
           '呼びかけエンジン状態: ${status.lastError}',
         );
-      } else if (status.running && _canShowWakeWordIdleMessage()) {
+      } else if (status.running &&
+          !_isSubmitting &&
+          !_isCanonicalizing &&
+          !_isExecutionInProgress() &&
+          !_isUnderstandingInProgress() &&
+          _canShowWakeWordIdleMessage()) {
         _speechMessage = _ux(
           '호출어 대기 중입니다. 반응이 없으면 Windows 기본 입력 장치를 확인해 주세요.',
           '呼びかけ待機中です。反応がない場合は Windows の既定の入力デバイスを確認してください。',
@@ -1662,9 +1858,9 @@ class _HomeScreenState extends State<HomeScreen> {
         languageHint: _preferredLanguageCode(),
       );
       if (!mounted) {
-        return response.text;
+        return response.normalizedText;
       }
-      final trimmed = response.text.trim();
+      final trimmed = response.normalizedText.trim();
       if (trimmed.isEmpty) {
         return _liveTranscriptionText;
       }
@@ -1892,7 +2088,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_speechBusy) {
       return _ux('음성을 글자로 바꾸고 있어요', '音声を文字に変えています');
     }
-    if (_isListening || _isRecordingFallback) {
+    if (_isPreparingWakeWordCapture || _isListening || _isRecordingFallback) {
       return _ux('음성을 듣고 있어요', '音声を聞いています');
     }
     if (_status == 'Completed') {
@@ -1905,6 +2101,12 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   String _heroSubtitle() {
+    if (_isPreparingWakeWordCapture) {
+      return _ux(
+        '곧 음성 녹음을 시작할게요. 안내가 끝나면 말씀해 주세요.',
+        'まもなく録音を始めます。案内が終わったら話してください。',
+      );
+    }
     if (_isUnderstandingInProgress()) {
       return _ux(
         '요청 내용을 이해하고 있어요. 잠시만 기다려 주세요.',

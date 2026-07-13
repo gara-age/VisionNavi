@@ -3,6 +3,7 @@ class CanonicalCommand {
     required this.inputMode,
     required this.rawText,
     required this.normalizedText,
+    this.preferredLanguage,
     required this.taskDomain,
     required this.intent,
     required this.riskLevel,
@@ -16,6 +17,7 @@ class CanonicalCommand {
       inputMode: json['input_mode'] as String,
       rawText: json['raw_text'] as String,
       normalizedText: json['normalized_text'] as String,
+      preferredLanguage: json['preferred_language'] as String?,
       taskDomain: json['task_domain'] as String,
       intent: json['intent'] as String,
       riskLevel: json['risk_level'] as String,
@@ -30,6 +32,7 @@ class CanonicalCommand {
       'input_mode': inputMode,
       'raw_text': rawText,
       'normalized_text': normalizedText,
+      'preferred_language': preferredLanguage,
       'task_domain': taskDomain,
       'intent': intent,
       'risk_level': riskLevel,
@@ -42,6 +45,7 @@ class CanonicalCommand {
   final String inputMode;
   final String rawText;
   final String normalizedText;
+  final String? preferredLanguage;
   final String taskDomain;
   final String intent;
   final String riskLevel;
@@ -153,6 +157,7 @@ class RunCommandResponse {
 class AudioTranscriptionResponse {
   const AudioTranscriptionResponse({
     required this.text,
+    required this.normalizedText,
     required this.filePath,
     required this.model,
     this.detectedLanguage,
@@ -163,6 +168,8 @@ class AudioTranscriptionResponse {
   factory AudioTranscriptionResponse.fromJson(Map<String, dynamic> json) {
     return AudioTranscriptionResponse(
       text: json['text'] as String,
+      normalizedText:
+          json['normalized_text'] as String? ?? json['text'] as String,
       filePath: json['file_path'] as String,
       model: json['model'] as String,
       detectedLanguage: json['detected_language'] as String?,
@@ -172,6 +179,7 @@ class AudioTranscriptionResponse {
   }
 
   final String text;
+  final String normalizedText;
   final String filePath;
   final String model;
   final String? detectedLanguage;
@@ -260,7 +268,8 @@ class AudioDiagnosticEndpoint {
   factory AudioDiagnosticEndpoint.fromJson(Map<String, dynamic> json) {
     return AudioDiagnosticEndpoint(
       status: json['status'] as String? ?? '',
-      className: json['class'] as String? ?? json['class_name'] as String? ?? '',
+      className:
+          json['class'] as String? ?? json['class_name'] as String? ?? '',
       friendlyName: json['friendly_name'] as String? ?? '',
       instanceId: json['instance_id'] as String? ?? '',
     );
@@ -312,7 +321,8 @@ class AudioDiagnosticsResponse {
     return AudioDiagnosticsResponse(
       platform: json['platform'] as String? ?? 'windows',
       inputEndpoints: (json['input_endpoints'] as List<dynamic>? ?? const [])
-          .map((item) => AudioDiagnosticEndpoint.fromJson(item as Map<String, dynamic>))
+          .map((item) =>
+              AudioDiagnosticEndpoint.fromJson(item as Map<String, dynamic>))
           .toList(),
       summary: AudioDiagnosticsSummary.fromJson(
         (json['summary'] as Map<String, dynamic>?) ?? const {},

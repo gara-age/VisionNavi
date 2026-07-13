@@ -7,9 +7,15 @@ class HomeSettingsDialog extends StatefulWidget {
   const HomeSettingsDialog({
     super.key,
     required this.initialSettings,
+    required this.onTestGuidanceTts,
   });
 
   final HomeUserSettings initialSettings;
+  final Future<void> Function(
+    HomeUserSettings settings,
+    String language,
+    String provider,
+  ) onTestGuidanceTts;
 
   @override
   State<HomeSettingsDialog> createState() => _HomeSettingsDialogState();
@@ -45,6 +51,81 @@ class _HomeSettingsDialogState extends State<HomeSettingsDialog> {
 
   void _save() {
     Navigator.of(context).pop(_draft);
+  }
+
+  List<_VoiceOptionData> _koVoiceOptions() {
+    return const [
+      _VoiceOptionData('ko-KR-SunHiNeural', 'SunHi', '부드럽고 또렷한 기본 음성'),
+      _VoiceOptionData('ko-KR-InJoonNeural', 'InJoon', '차분한 남성 음성'),
+      _VoiceOptionData(
+        'ko-KR-HyunsuMultilingualNeural',
+        'Hyunsu',
+        '밝고 자연스러운 남성 음성',
+      ),
+    ];
+  }
+
+  List<_VoiceOptionData> _jaVoiceOptions() {
+    return const [
+      _VoiceOptionData('', '기본 추천', '현재 가장 안정적으로 재생되는 기본 음성'),
+      _VoiceOptionData('ja-JP-NanamiNeural', 'Nanami', '부드러운 여성 음성'),
+      _VoiceOptionData('ja-JP-KeitaNeural', 'Keita', '차분한 남성 음성'),
+    ];
+  }
+
+  // ignore: unused_element
+  List<_VoiceOptionData> _wakeWordPhraseOptions() {
+    if (_isJapanese) {
+      return const [
+        _VoiceOptionData('ねえ、ナビ', 'ねえ、ナビ', '일본어 기본 호출어'),
+        _VoiceOptionData('ナビさん', 'ナビさん', '조금 더 정중한 호출어'),
+      ];
+    }
+
+    return const [
+      _VoiceOptionData('나비야', '나비야', '기본 한국어 호출어'),
+      _VoiceOptionData('헤이 나비', '헤이 나비', '조금 더 또렷한 호출어'),
+    ];
+  }
+
+  List<_VoiceOptionData> _wakeWordPhraseOptionsSafe() {
+    if (_isJapanese) {
+      return const [
+        _VoiceOptionData(
+          '\u306d\u3048\u3001\u30ca\u30d3',
+          '\u306d\u3048\u3001\u30ca\u30d3',
+          '\uc77c\ubcf8\uc5b4 \uae30\ubcf8 \ud638\ucd9c\uc5b4',
+        ),
+        _VoiceOptionData(
+          '\u30ca\u30d3\u3055\u3093',
+          '\u30ca\u30d3\u3055\u3093',
+          '\uc77c\ubcf8\uc5b4 \ud638\ucd9c\uc5b4',
+        ),
+      ];
+    }
+
+    return const [
+      _VoiceOptionData(
+        '\ub098\ube44\uc57c',
+        '\ub098\ube44\uc57c',
+        '\ud55c\uad6d\uc5b4 \uae30\ubcf8 \ud638\ucd9c\uc5b4',
+      ),
+      _VoiceOptionData(
+        '\ud5e4\uc774 \ub098\ube44',
+        '\ud5e4\uc774 \ub098\ube44',
+        '\ud55c\uad6d\uc5b4 \ud638\ucd9c\uc5b4',
+      ),
+    ];
+  }
+
+  String _voiceDescription(String language, String value) {
+    final options = language == 'ja' ? _jaVoiceOptions() : _koVoiceOptions();
+    for (final option in options) {
+      if (option.value == value) {
+        return option.description;
+      }
+    }
+    return language == 'ja' ? '선택한 일본어 안내 음성' : '선택한 한국어 안내 음성';
   }
 
   @override
@@ -392,6 +473,52 @@ class _HomeSettingsDialogState extends State<HomeSettingsDialog> {
           ),
         ),
         const SizedBox(height: 12),
+        _VoiceDropdownSettingCard(
+          icon: Icons.record_voice_over_rounded,
+          color: const Color(0xFF0F766E),
+          title: _t('한국어 안내 목소리', '韓国語の案内音声'),
+          description: _voiceDescription('ko', _draft.ttsVoiceKo),
+          value: _draft.ttsVoiceKo,
+          options: _koVoiceOptions(),
+          onChanged: (value) => setState(
+            () => _draft = _draft.copyWith(
+              ttsVoiceKo: value ?? _draft.ttsVoiceKo,
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: OutlinedButton.icon(
+            onPressed: () => widget.onTestGuidanceTts(_draft, 'ko', 'edge'),
+            icon: const Icon(Icons.play_arrow_rounded),
+            label: const Text('\ud55c\uad6d\uc5b4 Edge \ud14c\uc2a4\ud2b8'),
+          ),
+        ),
+        const SizedBox(height: 12),
+        _VoiceDropdownSettingCard(
+          icon: Icons.multitrack_audio_rounded,
+          color: const Color(0xFF2563EB),
+          title: _t('일본어 안내 목소리', '日本語の案内音声'),
+          description: _voiceDescription('ja', _draft.ttsVoiceJa),
+          value: _draft.ttsVoiceJa,
+          options: _jaVoiceOptions(),
+          onChanged: (value) => setState(
+            () => _draft = _draft.copyWith(
+              ttsVoiceJa: value ?? _draft.ttsVoiceJa,
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: OutlinedButton.icon(
+            onPressed: () => widget.onTestGuidanceTts(_draft, 'ja', 'edge'),
+            icon: const Icon(Icons.play_arrow_rounded),
+            label: const Text('\uc77c\ubcf8\uc5b4 Edge \ud14c\uc2a4\ud2b8'),
+          ),
+        ),
+        const SizedBox(height: 12),
         _ToggleSettingCard(
           icon: Icons.hearing_rounded,
           color: const Color(0xFF2563EB),
@@ -403,6 +530,23 @@ class _HomeSettingsDialogState extends State<HomeSettingsDialog> {
           value: _draft.wakeWordEnabled,
           onChanged: (value) => setState(
             () => _draft = _draft.copyWith(wakeWordEnabled: value),
+          ),
+        ),
+        const SizedBox(height: 12),
+        _VoiceDropdownSettingCard(
+          icon: Icons.campaign_rounded,
+          color: const Color(0xFF7C3AED),
+          title: _t('호출어 선택', '呼びかけの選択'),
+          description: _t(
+            '듣고 싶은 호출어를 하나 골라 주세요.',
+            '使いたい呼びかけを一つ選んでください。',
+          ),
+          value: _draft.wakeWordPhrase,
+          options: _wakeWordPhraseOptionsSafe(),
+          onChanged: (value) => setState(
+            () => _draft = _draft.copyWith(
+              wakeWordPhrase: value ?? _draft.wakeWordPhrase,
+            ),
           ),
         ),
         const SizedBox(height: 12),
@@ -1417,7 +1561,8 @@ class _StatusBadge extends StatelessWidget {
       decoration: BoxDecoration(
         color: theme.colorScheme.primary.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: theme.colorScheme.primary.withValues(alpha: 0.22)),
+        border: Border.all(
+            color: theme.colorScheme.primary.withValues(alpha: 0.22)),
       ),
       child: Text(
         label,
@@ -1425,6 +1570,90 @@ class _StatusBadge extends StatelessWidget {
           color: theme.colorScheme.primary,
           fontWeight: FontWeight.w800,
         ),
+      ),
+    );
+  }
+}
+
+class _VoiceOptionData {
+  const _VoiceOptionData(this.value, this.label, this.description);
+
+  final String value;
+  final String label;
+  final String description;
+}
+
+class _VoiceDropdownSettingCard extends StatelessWidget {
+  const _VoiceDropdownSettingCard({
+    required this.icon,
+    required this.color,
+    required this.title,
+    required this.description,
+    required this.value,
+    required this.options,
+    required this.onChanged,
+  });
+
+  final IconData icon;
+  final Color color;
+  final String title;
+  final String description;
+  final String value;
+  final List<_VoiceOptionData> options;
+  final ValueChanged<String?> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final surfaceTheme = theme.extension<AppSurfaceTheme>()!;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: surfaceTheme.surface,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: surfaceTheme.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _CardTitleRow(
+            icon: icon,
+            color: color,
+            title: title,
+            description: description,
+          ),
+          const SizedBox(height: 14),
+          DropdownButtonFormField<String>(
+            initialValue: value,
+            isExpanded: true,
+            decoration: InputDecoration(
+              filled: true,
+              fillColor: surfaceTheme.contentBackground,
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+                borderSide: BorderSide(color: surfaceTheme.border),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(16),
+                borderSide: BorderSide(color: surfaceTheme.border),
+              ),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 14,
+              ),
+            ),
+            items: options
+                .map(
+                  (option) => DropdownMenuItem<String>(
+                    value: option.value,
+                    child: Text(option.label),
+                  ),
+                )
+                .toList(),
+            onChanged: onChanged,
+          ),
+        ],
       ),
     );
   }

@@ -28,14 +28,18 @@ class OrchestratorClient {
     return '$fallbackMessage: ${response.statusCode}';
   }
 
-  Future<CanonicalCommand> canonicalizeCommand(String text,
-      {String inputMode = 'text'}) async {
+  Future<CanonicalCommand> canonicalizeCommand(
+    String text, {
+    String inputMode = 'text',
+    String? preferredLanguage,
+  }) async {
     final response = await http.post(
       _httpBaseUri.resolve('/pipeline/canonicalize'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
         'input_mode': inputMode,
         'text': text,
+        if (preferredLanguage != null) 'preferred_language': preferredLanguage,
       }),
     );
 
@@ -48,14 +52,18 @@ class OrchestratorClient {
         jsonDecode(response.body) as Map<String, dynamic>);
   }
 
-  Future<RunCommandResponse> runCommand(String text,
-      {String inputMode = 'text'}) async {
+  Future<RunCommandResponse> runCommand(
+    String text, {
+    String inputMode = 'text',
+    String? preferredLanguage,
+  }) async {
     final response = await http.post(
       _httpBaseUri.resolve('/pipeline/run'),
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({
         'input_mode': inputMode,
         'text': text,
+        if (preferredLanguage != null) 'preferred_language': preferredLanguage,
       }),
     );
 
@@ -105,7 +113,8 @@ class OrchestratorClient {
     );
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw HttpException(_errorMessage('Failed to transcribe audio file', response));
+      throw HttpException(
+          _errorMessage('Failed to transcribe audio file', response));
     }
 
     return AudioTranscriptionResponse.fromJson(
@@ -129,7 +138,8 @@ class OrchestratorClient {
     );
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw HttpException(_errorMessage('Failed to generate popup summary', response));
+      throw HttpException(
+          _errorMessage('Failed to generate popup summary', response));
     }
 
     return PopupSummaryResponse.fromJson(
@@ -138,9 +148,11 @@ class OrchestratorClient {
   }
 
   Future<WakeWordStatusResponse> fetchWakeWordStatus() async {
-    final response = await http.get(_httpBaseUri.resolve('/pipeline/wakeword/status'));
+    final response =
+        await http.get(_httpBaseUri.resolve('/pipeline/wakeword/status'));
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw HttpException(_errorMessage('Failed to fetch wakeword status', response));
+      throw HttpException(
+          _errorMessage('Failed to fetch wakeword status', response));
     }
     return WakeWordStatusResponse.fromJson(
       jsonDecode(response.body) as Map<String, dynamic>,
@@ -148,9 +160,11 @@ class OrchestratorClient {
   }
 
   Future<AudioDiagnosticsResponse> fetchAudioDiagnostics() async {
-    final response = await http.get(_httpBaseUri.resolve('/pipeline/audio-diagnostics'));
+    final response =
+        await http.get(_httpBaseUri.resolve('/pipeline/audio-diagnostics'));
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw HttpException(_errorMessage('Failed to fetch audio diagnostics', response));
+      throw HttpException(
+          _errorMessage('Failed to fetch audio diagnostics', response));
     }
     return AudioDiagnosticsResponse.fromJson(
       jsonDecode(response.body) as Map<String, dynamic>,
@@ -174,7 +188,8 @@ class OrchestratorClient {
       }),
     );
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw HttpException(_errorMessage('Failed to start wakeword listener', response));
+      throw HttpException(
+          _errorMessage('Failed to start wakeword listener', response));
     }
     return WakeWordStatusResponse.fromJson(
       jsonDecode(response.body) as Map<String, dynamic>,
@@ -182,9 +197,11 @@ class OrchestratorClient {
   }
 
   Future<WakeWordStatusResponse> stopWakeWord() async {
-    final response = await http.post(_httpBaseUri.resolve('/pipeline/wakeword/stop'));
+    final response =
+        await http.post(_httpBaseUri.resolve('/pipeline/wakeword/stop'));
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw HttpException(_errorMessage('Failed to stop wakeword listener', response));
+      throw HttpException(
+          _errorMessage('Failed to stop wakeword listener', response));
     }
     return WakeWordStatusResponse.fromJson(
       jsonDecode(response.body) as Map<String, dynamic>,
